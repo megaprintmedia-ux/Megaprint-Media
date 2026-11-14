@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { useErpData } from './hooks/useErpData';
 import { Job, NavSection, UserRole } from './types/erp';
 import { BrandLogo } from './components/BrandLogo';
+import { LoginView } from './components/LoginView';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { DashboardView } from './components/DashboardView';
@@ -38,6 +39,9 @@ const ErpWorkspace: React.FC = () => {
     activeViewRole,
     setActiveViewRole,
     signInWithGoogle,
+    signInWithEmail,
+    sendPasswordReset,
+    clearAuthError,
     signOut,
   } = useAuth();
 
@@ -60,40 +64,16 @@ const ErpWorkspace: React.FC = () => {
 
   if (!user || !profile) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6">
-        <div className="bg-white border border-slate-200 rounded-lg max-w-md w-full p-8 space-y-6">
-          <BrandLogo
-            logoDataUrl={erp.settings.logoDataUrl}
-            companyName="Megaprint"
-            variant="light"
-          />
-          <div className="space-y-2">
-            <h1 className="font-display text-xl font-bold text-slate-900">
-              Operations, Costing &amp; Accounting Portal
-            </h1>
-            <p className="text-sm text-slate-600 leading-relaxed">
-              Sign in with your Megaprint Google account to access role-based tools
-              for Sales &amp; Marketing, Production Job Cards, VAT Accounting, Time
-              Tracking, and HR.
-            </p>
-          </div>
-
-          {authError && (
-            <div className="border border-red-200 bg-red-50 text-red-700 text-xs rounded-md p-3">
-              {authError}
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={signInWithGoogle}
-            disabled={signingIn}
-            className="w-full py-2.5 px-4 rounded-md bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
-          >
-            {signingIn ? 'Signing in...' : 'Sign in with Google'}
-          </button>
-        </div>
-      </div>
+      <LoginView
+        logoDataUrl={erp.settings.logoDataUrl}
+        companyName={erp.settings.companyName || 'Megaprint'}
+        signingIn={signingIn}
+        authError={authError}
+        onSignInWithEmail={signInWithEmail}
+        onSignInWithGoogle={signInWithGoogle}
+        onSendPasswordReset={sendPasswordReset}
+        onClearError={clearAuthError}
+      />
     );
   }
 
@@ -228,6 +208,7 @@ const ErpWorkspace: React.FC = () => {
                   clients={erp.clients}
                   jobs={erp.jobs}
                   invoices={erp.invoices}
+                  cashBookEntries={erp.cashBookEntries}
                   onCreateClient={erp.createClient}
                   onUpdateClient={erp.updateClient}
                 />
@@ -287,6 +268,7 @@ const ErpWorkspace: React.FC = () => {
                   onCreateSupplierInvoice={erp.createSupplierInvoice}
                   onRecordSupplierPayment={erp.recordSupplierPayment}
                   onUpdateVatStatus={erp.updateSupplierInvoiceVatStatus}
+                  onRemitSupplierWht={erp.markSupplierWhtRemitted}
                   onDeleteSupplierInvoice={erp.deleteSupplierInvoice}
                 />
               )}

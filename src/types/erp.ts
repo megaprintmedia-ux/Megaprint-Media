@@ -74,6 +74,8 @@ export interface CompanySettings {
   companyName: string;
   tagline: string;
   taxPin: string;
+  zimraTin?: string;
+  vatRegNumber?: string;
   address: string;
   phone: string;
   email: string;
@@ -93,6 +95,9 @@ export interface Client {
   email: string;
   phone: string;
   taxPin: string;
+  zimraTin?: string;
+  vatRegNumber?: string;
+  isVatRegistered?: boolean;
   address: string;
   paymentTermsDays: number;
   notes: string;
@@ -200,15 +205,23 @@ export interface Invoice {
   clientId: string;
   clientName: string;
   clientVatPin: string;
+  clientTin?: string;
+  clientVatReg?: string;
   issueDate: string;
   dueDate: string;
   status: InvoiceStatus;
   pricingMode: PricingMode;
   vatRate: number;
   lines: InvoiceLine[];
+  standardNetAmount?: number;
+  zeroRatedAmount?: number;
+  exemptAmount?: number;
   netAmount: number;
   vatAmount: number;
   grossAmount: number;
+  whtRate?: number;
+  whtWithheldAmount?: number;
+  whtCertificateRef?: string;
   amountPaid: number;
   balanceDue: number;
   paymentMethod: string;
@@ -225,15 +238,21 @@ export interface Expense {
   expenseNumber: string;
   vendorName: string;
   vendorVatPin: string;
+  vendorTin?: string;
+  vendorVatReg?: string;
   vendorInvoiceRef: string;
   category: ExpenseCategory;
   jobId: string;
   expenseDate: string;
+  vatTreatment?: VatTreatment;
   isVatClaimable: boolean;
   vatRate: number;
   netAmount: number;
   vatAmount: number;
   grossAmount: number;
+  whtApplicable?: boolean;
+  whtRate?: number;
+  whtAmount?: number;
   paymentStatus: 'Paid' | 'Payable';
   notes: string;
   ownerUid: string;
@@ -356,6 +375,9 @@ export interface SupplierInvoice {
   recordNumber: string;
   supplierName: string;
   supplierTaxPin: string;
+  supplierTin?: string;
+  supplierVatReg?: string;
+  isVatRegistered?: boolean;
   supplierInvoiceNo: string;
   category: SupplierInvoiceCategory;
   jobId: string;
@@ -367,9 +389,16 @@ export interface SupplierInvoice {
   isVatClaimable: boolean;
   vatRate: number;
   lines: InvoiceLine[];
+  standardNetAmount?: number;
+  zeroRatedAmount?: number;
+  exemptAmount?: number;
   netAmount: number;
   vatAmount: number;
   grossAmount: number;
+  whtApplicable?: boolean;
+  whtRate?: number;
+  whtAmount?: number;
+  whtRemitted?: boolean;
   amountPaid: number;
   balanceDue: number;
   status: SupplierInvoiceStatus;
@@ -485,6 +514,7 @@ export const DEFAULT_ZIM_CASH_ACCOUNTS = [
 export type CashBookCategory =
   | 'Customer Receipt'
   | 'Supplier Payment'
+  | 'Withholding Tax (ZIMRA)'
   | 'Wages & Casuals'
   | 'Sales Commission'
   | 'Transport & Fuel'

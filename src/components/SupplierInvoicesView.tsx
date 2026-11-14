@@ -21,7 +21,13 @@ import {
   UserRole,
   VatTreatment,
 } from '../types/erp';
-import { calculateVatBreakdown, formatMoney, round2 } from '../utils/vat';
+import {
+  calculateVatBreakdown,
+  calculateWithholdingTax,
+  formatMoney,
+  round2,
+  summarizeTaxBreakdown,
+} from '../utils/vat';
 import { StatusText } from './StatusText';
 
 interface SupplierInvoicesViewProps {
@@ -41,13 +47,35 @@ interface SupplierInvoicesViewProps {
     paymentAmount: number,
     method: string,
     reference: string,
-    cashBookAccount?: string
+    cashBookAccount?: string,
+    options?: {
+      whtDeducted?: number;
+      whtRemitted?: boolean;
+    }
   ) => Promise<void>;
   onUpdateVatStatus: (
     supplierInvoiceId: string,
     updates: Partial<
-      Pick<SupplierInvoice, 'status' | 'isVatClaimable' | 'supplierTaxPin' | 'notes'>
+      Pick<
+        SupplierInvoice,
+        | 'status'
+        | 'isVatClaimable'
+        | 'supplierTaxPin'
+        | 'supplierTin'
+        | 'supplierVatReg'
+        | 'isVatRegistered'
+        | 'whtApplicable'
+        | 'whtRate'
+        | 'whtAmount'
+        | 'whtRemitted'
+        | 'notes'
+      >
     >
+  ) => Promise<void>;
+  onRemitSupplierWht: (
+    supplierInvoice: SupplierInvoice,
+    cashBookAccount?: string,
+    reference?: string
   ) => Promise<void>;
   onDeleteSupplierInvoice: (supplierInvoiceId: string) => Promise<void>;
 }
@@ -78,6 +106,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
   onCreateSupplierInvoice,
   onRecordSupplierPayment,
   onUpdateVatStatus,
+  onRemitSupplierWht,
   onDeleteSupplierInvoice,
 }) => {
   const cashBookAccounts = useMemo(() => {
@@ -95,7 +124,9 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
 
   // Create form state
   const [supplierName, setSupplierName] = useState('');
-  const [supplierTaxPin, setSupplierTaxPin] = useState('');
+  const [supplierTin, setSupplierTin] = useState('');
+  const [supplierVatReg, setSupplierVatReg] = useState('');
+  const [isVatRegistered, setIsVatRegistered] = useState(true);
   const [supplierInvoiceNo, setSupplierInvoiceNo] = useState('');
   const [category, setCategory] = useState<SupplierInvoiceCategory>('Materials & Substrates');
   const [jobId, setJobId] = useState('');
@@ -106,6 +137,8 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
   const [pricingMode, setPricingMode] = useState<PricingMode>('exclusive');
   const [vatRate, setVatRate] = useState(String(settings.defaultVatRate ?? 15));
   const [isVatClaimable, setIsVatClaimable] = useState(true);
+  const [whtApplicable, setWhtApplicable] = useState(false);
+  const [whtRate, setWhtRate] = useState('30');
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<DraftSupplierLine[]>([
     { description: '', quantity: '1', unitPrice: '0', vatTreatment: 'standard' },
@@ -119,7 +152,16 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
     cashBookAccounts[0] || DEFAULT_ZIM_CASH_ACCOUNTS[0]
   );
   const [payRef, setPayRef] = useState('');
+  const [payWhtDeducted, setPayWhtDeducted] = useState('0');
+  const [payWhtRemitted, setPayWhtRemitted] = useState(false);
   const [recordingPay, setRecordingPay] = useState(false);
+
+  // Inspect modal WHT remittance state
+  const [remitAccount, setRemitAccount] = useState(
+    cashBookAccounts[0] || DEFAULT_ZIM_CASH_ACCOUNTS[0]
+  );
+  const [remitRef, setRemitRef] = useState('');
+  const [remittingWht, setRemittingWht] = useState(false);
 
   const computedLines: InvoiceLine[] = useMemo(() => {
     const rate = Number(vatRate) || 0;
@@ -144,12 +186,17 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
     });
   }, [lines, pricingMode, vatRate]);
 
-  const totals = useMemo(() => {
-    const netAmount = round2(computedLines.reduce((a, l) => a + l.netAmount, 0));
-    const vatAmount = round2(computedLines.reduce((a, l) => a + l.vatAmount, 0));
-    const grossAmount = round2(computedLines.reduce((a, l) => a + l.grossAmount, 0));
-    return { netAmount, vatAmount, grossAmount };
-  }, [computedLines]);
+  const totals = useMemo(() => summarizeTaxBreakdown(computedLines), [computedLines]);
+
+  const createWhtAmount = useMemo(
+    () =>
+      calculateWithholdingTax({
+        applicable: whtApplicable,
+        baseAmount: totals.netAmount,
+        ratePct: Number(whtRate) || 0,
+      }),
+    [whtApplicable, totals.netAmount, whtRate]
+  );
 
   const summary = useMemo(() => {
     const totalPayable = round2(
@@ -162,16 +209,26 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
         .filter((s) => s.isVatClaimable)
         .reduce((acc, s) => acc + (s.vatAmount || 0), 0)
     );
-    const missingPinCount = supplierInvoices.filter(
-      (s) => s.vatAmount > 0 && !s.supplierTaxPin.trim()
-    ).length;
+    const missingTaxIdCount = supplierInvoices.filter((s) => {
+      const hasTinOrVat = Boolean(
+        (s.supplierTin || s.supplierTaxPin || '').trim() ||
+          (s.supplierVatReg || '').trim()
+      );
+      return s.vatAmount > 0 && !hasTinOrVat;
+    }).length;
+    const unremittedWht = round2(
+      supplierInvoices
+        .filter((s) => (s.whtAmount || 0) > 0 && !s.whtRemitted)
+        .reduce((acc, s) => acc + (s.whtAmount || 0), 0)
+    );
     const totalGrossRecorded = round2(
       supplierInvoices.reduce((acc, s) => acc + (s.grossAmount || 0), 0)
     );
     return {
       totalPayable,
       totalClaimableVat,
-      missingPinCount,
+      missingTaxIdCount,
+      unremittedWht,
       totalGrossRecorded,
     };
   }, [supplierInvoices]);
@@ -185,6 +242,8 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
         inv.recordNumber.toLowerCase().includes(q) ||
         inv.supplierName.toLowerCase().includes(q) ||
         inv.supplierInvoiceNo.toLowerCase().includes(q) ||
+        (inv.supplierTin || '').toLowerCase().includes(q) ||
+        (inv.supplierVatReg || '').toLowerCase().includes(q) ||
         (inv.supplierTaxPin || '').toLowerCase().includes(q) ||
         (inv.jobNumber || '').toLowerCase().includes(q)
       );
@@ -193,7 +252,9 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
 
   const resetForm = () => {
     setSupplierName('');
-    setSupplierTaxPin('');
+    setSupplierTin('');
+    setSupplierVatReg('');
+    setIsVatRegistered(true);
     setSupplierInvoiceNo('');
     setCategory('Materials & Substrates');
     setJobId('');
@@ -202,6 +263,8 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
     setPricingMode('exclusive');
     setVatRate(String(settings.defaultVatRate ?? 15));
     setIsVatClaimable(true);
+    setWhtApplicable(false);
+    setWhtRate('30');
     setNotes('');
     setLines([{ description: '', quantity: '1', unitPrice: '0', vatTreatment: 'standard' }]);
   };
@@ -213,6 +276,8 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
     }
     const chosenJob = jobs.find((j) => j.id === jobId);
     const primaryTreatment = computedLines[0]?.vatTreatment || 'standard';
+    const cleanTin = supplierTin.trim().toUpperCase();
+    const cleanVatReg = supplierVatReg.trim().toUpperCase();
 
     setSaving(true);
     try {
@@ -222,7 +287,10 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
       await onCreateSupplierInvoice({
         recordNumber: nextRecNo,
         supplierName: supplierName.trim(),
-        supplierTaxPin: supplierTaxPin.trim().toUpperCase(),
+        supplierTaxPin: cleanTin || cleanVatReg,
+        supplierTin: cleanTin,
+        supplierVatReg: cleanVatReg,
+        isVatRegistered: isVatRegistered || Boolean(cleanVatReg),
         supplierInvoiceNo: supplierInvoiceNo.trim(),
         category,
         jobId: chosenJob?.id || '',
@@ -234,9 +302,16 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
         isVatClaimable: isVatClaimable && totals.vatAmount > 0,
         vatRate: Number(vatRate) || 0,
         lines: computedLines,
+        standardNetAmount: totals.standardNetAmount,
+        zeroRatedAmount: totals.zeroRatedAmount,
+        exemptAmount: totals.exemptAmount,
         netAmount: totals.netAmount,
         vatAmount: totals.vatAmount,
         grossAmount: totals.grossAmount,
+        whtApplicable,
+        whtRate: whtApplicable ? Number(whtRate) || 0 : 0,
+        whtAmount: createWhtAmount,
+        whtRemitted: false,
         amountPaid: 0,
         balanceDue: totals.grossAmount,
         status: 'Unpaid',
@@ -251,22 +326,43 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
     }
   };
 
+  const openPaymentModal = (inv: SupplierInvoice) => {
+    setPaymentModalInv(inv);
+    setPayAccount(cashBookAccounts[0] || DEFAULT_ZIM_CASH_ACCOUNTS[0]);
+    setPayRef('');
+    const prefillWht =
+      inv.whtApplicable && (inv.whtAmount || 0) > 0 && inv.amountPaid === 0
+        ? Math.min(inv.balanceDue, round2(inv.whtAmount || 0))
+        : 0;
+    setPayWhtDeducted(String(prefillWht));
+    setPayWhtRemitted(Boolean(inv.whtRemitted));
+    setPayAmount(String(round2(Math.max(0, inv.balanceDue - prefillWht))));
+  };
+
   const handlePaymentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!paymentModalInv) return;
-    const amt = Math.max(0.01, Number(payAmount) || 0);
+    const cashAmt = Math.max(0, round2(Number(payAmount) || 0));
+    const whtDeducted = Math.max(0, round2(Number(payWhtDeducted) || 0));
+    if (cashAmt + whtDeducted <= 0.005) return;
+    if (cashAmt + whtDeducted > paymentModalInv.balanceDue + 0.02) return;
+
     setRecordingPay(true);
     try {
       await onRecordSupplierPayment(
         paymentModalInv,
-        amt,
+        cashAmt,
         payMethod,
         payRef,
-        payAccount
+        payAccount,
+        whtDeducted > 0
+          ? { whtDeducted, whtRemitted: payWhtRemitted }
+          : undefined
       );
       setPaymentModalInv(null);
       setPayAmount('');
       setPayRef('');
+      setPayWhtDeducted('0');
     } finally {
       setRecordingPay(false);
     }
@@ -277,7 +373,8 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
       [
         'Voucher #',
         'Supplier Name',
-        'Supplier ZIMRA BP #',
+        'Supplier ZIMRA TIN',
+        'Supplier VAT Reg #',
         'Supplier Invoice #',
         'Category',
         'Job #',
@@ -285,29 +382,48 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
         'Due Date',
         'Status',
         'VAT Claimable',
+        'Standard Net',
+        'Zero-Rated (0%)',
+        'Exempt',
         'Net Amount',
         'Input VAT',
         'Gross Amount',
-        'Amount Paid',
+        'WHT Amount',
+        'WHT Remitted',
+        'Amount Settled',
         'Balance Due',
       ],
-      ...filteredInvoices.map((s) => [
-        s.recordNumber,
-        s.supplierName,
-        s.supplierTaxPin || '',
-        s.supplierInvoiceNo,
-        s.category,
-        s.jobNumber || '',
-        s.invoiceDate,
-        s.dueDate,
-        s.status,
-        s.isVatClaimable ? 'Yes' : 'No',
-        s.netAmount.toFixed(2),
-        s.vatAmount.toFixed(2),
-        s.grossAmount.toFixed(2),
-        s.amountPaid.toFixed(2),
-        s.balanceDue.toFixed(2),
-      ]),
+      ...filteredInvoices.map((s) => {
+        const taxSum = summarizeTaxBreakdown(s.lines || [], {
+          vatTreatment: s.vatTreatment,
+          netAmount: s.netAmount,
+          vatAmount: s.vatAmount,
+          grossAmount: s.grossAmount,
+        });
+        return [
+          s.recordNumber,
+          s.supplierName,
+          s.supplierTin || s.supplierTaxPin || '',
+          s.supplierVatReg || '',
+          s.supplierInvoiceNo,
+          s.category,
+          s.jobNumber || '',
+          s.invoiceDate,
+          s.dueDate,
+          s.status,
+          s.isVatClaimable ? 'Yes' : 'No',
+          (s.standardNetAmount ?? taxSum.standardNetAmount).toFixed(2),
+          (s.zeroRatedAmount ?? taxSum.zeroRatedAmount).toFixed(2),
+          (s.exemptAmount ?? taxSum.exemptAmount).toFixed(2),
+          s.netAmount.toFixed(2),
+          s.vatAmount.toFixed(2),
+          s.grossAmount.toFixed(2),
+          (s.whtAmount || 0).toFixed(2),
+          s.whtRemitted ? 'Yes' : 'No',
+          s.amountPaid.toFixed(2),
+          s.balanceDue.toFixed(2),
+        ];
+      }),
     ];
     const csv = rows
       .map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
@@ -350,25 +466,27 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
           <div className="mt-2 font-mono-nums text-2xl font-semibold text-amber-700">
             {formatMoney(summary.totalPayable, settings.currency)}
           </div>
-          <div className="mt-1 text-xs text-slate-500">
-            {supplierInvoices.filter((s) => s.status !== 'Paid').length} invoices awaiting
-            settlement
+          <div className="mt-1 text-xs text-slate-500 font-mono-nums">
+            {supplierInvoices.filter((s) => s.status !== 'Paid').length} awaiting settlement
+            {summary.unremittedWht > 0
+              ? ` · WHT due ZIMRA: ${formatMoney(summary.unremittedWht, settings.currency)}`
+              : ''}
           </div>
         </div>
 
         <div className="bg-white border border-slate-200 rounded-lg p-5">
-          <div className="text-xs font-medium text-slate-500">ZIMRA BP Audit Status</div>
+          <div className="text-xs font-medium text-slate-500">ZIMRA TIN / VAT Audit</div>
           <div
             className={`mt-2 font-mono-nums text-2xl font-semibold ${
-              summary.missingPinCount > 0 ? 'text-red-700' : 'text-slate-900'
+              summary.missingTaxIdCount > 0 ? 'text-red-700' : 'text-slate-900'
             }`}
           >
-            {summary.missingPinCount === 0
+            {summary.missingTaxIdCount === 0
               ? '100% Compliant'
-              : `${summary.missingPinCount} Missing BP #`}
+              : `${summary.missingTaxIdCount} Missing TIN/VAT`}
           </div>
           <div className="mt-1 text-xs text-slate-500">
-            Supplier ZIMRA BP # required to claim Input VAT
+            Supplier ZIMRA TIN &amp; VAT Reg # required for Input VAT
           </div>
         </div>
       </div>
@@ -399,8 +517,8 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search supplier, BP #, invoice #..."
-              className="pl-8 pr-3 py-1.5 border border-slate-200 rounded-md text-xs text-slate-900 w-56 focus:outline-none focus:ring-2 focus:ring-blue-600"
+              placeholder="Search supplier, TIN, VAT #, invoice #..."
+              className="pl-8 pr-3 py-1.5 border border-slate-200 rounded-md text-xs text-slate-900 w-60 focus:outline-none focus:ring-2 focus:ring-blue-600"
             />
           </div>
         </div>
@@ -441,106 +559,133 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-500">
                   <th className="py-2.5 px-4">Voucher / Vendor Inv #</th>
-                  <th className="py-2.5 px-4">Supplier &amp; ZIMRA BP #</th>
+                  <th className="py-2.5 px-4">Supplier &amp; ZIMRA Tax #</th>
                   <th className="py-2.5 px-4">Category &amp; Job</th>
                   <th className="py-2.5 px-4">Status</th>
-                  <th className="py-2.5 px-4">Due Date</th>
                   <th className="py-2.5 px-4 text-right">Net</th>
                   <th className="py-2.5 px-4 text-right">Input VAT</th>
+                  <th className="py-2.5 px-4 text-right">WHT</th>
                   <th className="py-2.5 px-4 text-right">Gross</th>
                   <th className="py-2.5 px-4 text-right">Balance Due</th>
                   <th className="py-2.5 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-sm">
-                {filteredInvoices.map((inv) => (
-                  <tr key={inv.id} className="hover:bg-slate-50">
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <div className="font-mono-nums text-xs font-semibold text-blue-700">
-                        {inv.recordNumber}
-                      </div>
-                      <div className="font-mono-nums text-[11px] text-slate-500">
-                        Inv {inv.supplierInvoiceNo}
-                      </div>
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="font-medium text-slate-900">{inv.supplierName}</div>
-                      <div className="text-xs text-slate-500 font-mono-nums">
-                        {inv.supplierTaxPin ? inv.supplierTaxPin : 'No ZIMRA BP #'}
-                      </div>
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="text-xs text-slate-800">{inv.category}</div>
-                      <div className="text-[11px] text-slate-500 font-mono-nums">
-                        {inv.jobNumber ? `Job ${inv.jobNumber}` : 'General Overhead'}
-                      </div>
-                    </td>
-                    <td className="py-3 px-4">
-                      <StatusText status={inv.status} />
-                    </td>
-                    <td className="py-3 px-4 font-mono-nums text-xs text-slate-600 whitespace-nowrap">
-                      {inv.dueDate}
-                    </td>
-                    <td className="py-3 px-4 text-right font-mono-nums text-xs text-slate-700 whitespace-nowrap">
-                      {formatMoney(inv.netAmount, settings.currency)}
-                    </td>
-                    <td className="py-3 px-4 text-right font-mono-nums text-xs whitespace-nowrap">
-                      {inv.isVatClaimable ? (
-                        <span className="text-emerald-700 font-medium">
-                          {formatMoney(inv.vatAmount, settings.currency)}
-                        </span>
-                      ) : (
-                        <span className="text-slate-400">Non-claimable</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4 text-right font-mono-nums text-xs font-semibold text-slate-900 whitespace-nowrap">
-                      {formatMoney(inv.grossAmount, settings.currency)}
-                    </td>
-                    <td className="py-3 px-4 text-right font-mono-nums text-xs font-semibold text-amber-700 whitespace-nowrap">
-                      {formatMoney(inv.balanceDue, settings.currency)}
-                    </td>
-                    <td className="py-3 px-4 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedInvoice(inv)}
-                          className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded"
-                          title="Inspect supplier tax invoice"
-                          aria-label="Inspect supplier tax invoice"
-                        >
-                          <FileText className="h-4 w-4" />
-                        </button>
-                        {inv.balanceDue > 0.01 && (
+                {filteredInvoices.map((inv) => {
+                  const displayTin = inv.supplierTin || inv.supplierTaxPin;
+                  const taxSum = summarizeTaxBreakdown(inv.lines || [], {
+                    vatTreatment: inv.vatTreatment,
+                    netAmount: inv.netAmount,
+                    vatAmount: inv.vatAmount,
+                    grossAmount: inv.grossAmount,
+                  });
+                  return (
+                    <tr key={inv.id} className="hover:bg-slate-50">
+                      <td className="py-3 px-4 whitespace-nowrap">
+                        <div className="font-mono-nums text-xs font-semibold text-blue-700">
+                          {inv.recordNumber}
+                        </div>
+                        <div className="font-mono-nums text-[11px] text-slate-500">
+                          Inv {inv.supplierInvoiceNo}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="font-medium text-slate-900">{inv.supplierName}</div>
+                        <div className="text-xs text-slate-500 font-mono-nums">
+                          {displayTin ? `TIN: ${displayTin}` : 'No TIN'}
+                          {inv.supplierVatReg ? ` · VAT: ${inv.supplierVatReg}` : ''}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <div className="text-xs text-slate-800">{inv.category}</div>
+                        <div className="text-[11px] text-slate-500 font-mono-nums">
+                          {inv.jobNumber ? `Job ${inv.jobNumber}` : 'General Overhead'} · Due{' '}
+                          {inv.dueDate}
+                        </div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <StatusText status={inv.status} />
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono-nums text-xs text-slate-700 whitespace-nowrap">
+                        <div>{formatMoney(inv.netAmount, settings.currency)}</div>
+                        {(taxSum.zeroRatedAmount > 0 || taxSum.exemptAmount > 0) && (
+                          <div className="text-[10px] text-slate-400">
+                            {taxSum.zeroRatedAmount > 0 ? 'Zero 0%' : 'Exempt'}
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono-nums text-xs whitespace-nowrap">
+                        {inv.isVatClaimable ? (
+                          <span className="text-emerald-700 font-medium">
+                            {formatMoney(inv.vatAmount, settings.currency)}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">Non-claimable</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono-nums text-xs whitespace-nowrap">
+                        {(inv.whtAmount || 0) > 0 ? (
+                          <div>
+                            <div className="font-medium text-amber-700">
+                              {formatMoney(inv.whtAmount || 0, settings.currency)}
+                            </div>
+                            <div className="text-[10px] text-slate-500">
+                              {inv.whtRemitted ? 'Remitted' : 'Due ZIMRA'}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono-nums text-xs font-semibold text-slate-900 whitespace-nowrap">
+                        {formatMoney(inv.grossAmount, settings.currency)}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono-nums text-xs font-semibold text-amber-700 whitespace-nowrap">
+                        {formatMoney(inv.balanceDue, settings.currency)}
+                      </td>
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center gap-1.5">
                           <button
                             type="button"
                             onClick={() => {
-                              setPaymentModalInv(inv);
-                              setPayAmount(String(inv.balanceDue));
-                              setPayAccount(
+                              setRemitAccount(
                                 cashBookAccounts[0] || DEFAULT_ZIM_CASH_ACCOUNTS[0]
                               );
+                              setRemitRef(`WHT-${inv.recordNumber}`);
+                              setSelectedInvoice(inv);
                             }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                            className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded"
+                            title="Inspect supplier tax invoice"
+                            aria-label="Inspect supplier tax invoice"
                           >
-                            <CreditCard className="h-3.5 w-3.5" />
-                            <span>Pay</span>
+                            <FileText className="h-4 w-4" />
                           </button>
-                        )}
-                        {role === 'management' && (
-                          <button
-                            type="button"
-                            onClick={() => onDeleteSupplierInvoice(inv.id)}
-                            className="p-1.5 text-slate-400 hover:text-red-700 hover:bg-red-50 rounded"
-                            title="Delete supplier invoice"
-                            aria-label="Delete supplier invoice"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          {inv.balanceDue > 0.01 && (
+                            <button
+                              type="button"
+                              onClick={() => openPaymentModal(inv)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                            >
+                              <CreditCard className="h-3.5 w-3.5" />
+                              <span>Pay</span>
+                            </button>
+                          )}
+                          {role === 'management' && (
+                            <button
+                              type="button"
+                              onClick={() => onDeleteSupplierInvoice(inv.id)}
+                              className="p-1.5 text-slate-400 hover:text-red-700 hover:bg-red-50 rounded"
+                              title="Delete supplier invoice"
+                              aria-label="Delete supplier invoice"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -557,7 +702,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                   Record Supplier Tax Invoice
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Capture vendor tax details, line items, and Input VAT credit eligibility
+                  Capture ZIMRA TIN, VAT Reg #, tax class breakdown, and Withholding Tax
                 </p>
               </div>
               <button
@@ -586,18 +731,6 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Supplier ZIMRA BP / VAT #
-                  </label>
-                  <input
-                    type="text"
-                    value={supplierTaxPin}
-                    onChange={(e) => setSupplierTaxPin(e.target.value)}
-                    placeholder="e.g. BP 0200109381"
-                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums uppercase"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
                     Supplier Tax / FDMS Invoice #
                   </label>
                   <input
@@ -608,6 +741,44 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                     placeholder="e.g. FDMS-883421"
                     className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
                   />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Supplier ZIMRA TIN
+                  </label>
+                  <input
+                    type="text"
+                    value={supplierTin}
+                    onChange={(e) => setSupplierTin(e.target.value)}
+                    placeholder="e.g. 2000109381"
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Supplier VAT Reg Number
+                  </label>
+                  <input
+                    type="text"
+                    value={supplierVatReg}
+                    onChange={(e) => {
+                      setSupplierVatReg(e.target.value);
+                      if (e.target.value.trim()) setIsVatRegistered(true);
+                    }}
+                    placeholder="e.g. 10010938"
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums uppercase"
+                  />
+                </div>
+                <div className="flex items-center pt-5">
+                  <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isVatRegistered}
+                      onChange={(e) => setIsVatRegistered(e.target.checked)}
+                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-600"
+                    />
+                    <span>VAT Registered Supplier</span>
+                  </label>
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -644,28 +815,6 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                     ))}
                   </select>
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Invoice Date
-                  </label>
-                  <input
-                    type="date"
-                    value={invoiceDate}
-                    onChange={(e) => setInvoiceDate(e.target.value)}
-                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Payment Due Date
-                  </label>
-                  <input
-                    type="date"
-                    value={dueDate}
-                    onChange={(e) => setDueDate(e.target.value)}
-                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
-                  />
-                </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -694,6 +843,28 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                       className="w-full border border-slate-200 rounded-md px-2.5 py-2 text-sm font-mono-nums"
                     />
                   </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Invoice Date
+                  </label>
+                  <input
+                    type="date"
+                    value={invoiceDate}
+                    onChange={(e) => setInvoiceDate(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Payment Due Date
+                  </label>
+                  <input
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => setDueDate(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+                  />
                 </div>
               </div>
 
@@ -799,36 +970,102 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                 ))}
               </div>
 
-              {/* VAT Claim & Totals Summary */}
-              <div className="bg-slate-50 border border-slate-200 rounded-md p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={isVatClaimable}
-                    onChange={(e) => setIsVatClaimable(e.target.checked)}
-                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-600"
-                  />
-                  <span>Eligible for Input VAT Claim on VAT Return</span>
-                </label>
-                <div className="flex flex-wrap gap-6 font-mono-nums text-xs">
-                  <div>
-                    <span className="text-slate-500">Net </span>
-                    <strong className="text-slate-900">
-                      {formatMoney(totals.netAmount, settings.currency)}
-                    </strong>
+              {/* VAT Claim, Tax Class Breakdown & WHT Section */}
+              <div className="bg-slate-50 border border-slate-200 rounded-md p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={isVatClaimable && totals.vatAmount > 0}
+                      disabled={totals.vatAmount === 0}
+                      onChange={(e) => setIsVatClaimable(e.target.checked)}
+                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-600"
+                    />
+                    <span>Eligible for Input VAT Claim on VAT Return</span>
+                  </label>
+                  <div className="flex flex-wrap gap-4 font-mono-nums text-xs">
+                    {totals.zeroRatedAmount > 0 && (
+                      <div>
+                        <span className="text-slate-500">Zero 0% </span>
+                        <strong>
+                          {formatMoney(totals.zeroRatedAmount, settings.currency)}
+                        </strong>
+                      </div>
+                    )}
+                    {totals.exemptAmount > 0 && (
+                      <div>
+                        <span className="text-slate-500">Exempt </span>
+                        <strong>
+                          {formatMoney(totals.exemptAmount, settings.currency)}
+                        </strong>
+                      </div>
+                    )}
+                    <div>
+                      <span className="text-slate-500">Net </span>
+                      <strong className="text-slate-900">
+                        {formatMoney(totals.netAmount, settings.currency)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-500">Input VAT </span>
+                      <strong className="text-emerald-700">
+                        {formatMoney(totals.vatAmount, settings.currency)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="text-slate-500">Gross </span>
+                      <strong className="text-blue-700">
+                        {formatMoney(totals.grossAmount, settings.currency)}
+                      </strong>
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-slate-500">Input VAT </span>
-                    <strong className="text-emerald-700">
-                      {formatMoney(totals.vatAmount, settings.currency)}
-                    </strong>
+                </div>
+
+                <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={whtApplicable}
+                        onChange={(e) => setWhtApplicable(e.target.checked)}
+                        className="rounded border-slate-300 text-amber-600 focus:ring-amber-600"
+                      />
+                      <span>Apply ZIMRA Withholding Tax (e.g. 30% Non-ITF263)</span>
+                    </label>
+                    {whtApplicable && (
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <span className="text-slate-500">Rate %</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max="50"
+                          step="0.5"
+                          value={whtRate}
+                          onChange={(e) => setWhtRate(e.target.value)}
+                          className="w-16 border border-slate-200 rounded px-2 py-1 text-xs font-mono-nums bg-white"
+                        />
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <span className="text-slate-500">Gross </span>
-                    <strong className="text-blue-700">
-                      {formatMoney(totals.grossAmount, settings.currency)}
-                    </strong>
-                  </div>
+                  {whtApplicable && (
+                    <div className="flex flex-wrap gap-4 font-mono-nums text-xs">
+                      <div>
+                        <span className="text-slate-500">WHT Retained </span>
+                        <strong className="text-amber-700">
+                          {formatMoney(createWhtAmount, settings.currency)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Net Cash Payable </span>
+                        <strong className="text-slate-900">
+                          {formatMoney(
+                            Math.max(0, totals.grossAmount - createWhtAmount),
+                            settings.currency
+                          )}
+                        </strong>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -841,7 +1078,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                   maxLength={1000}
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Optional GRN number, delivery note reference, or payment terms"
+                  placeholder="Optional GRN number, ITF263 clearance note, or payment terms"
                   className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
                 />
               </div>
@@ -877,8 +1114,11 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                   {selectedInvoice.recordNumber} — {selectedInvoice.supplierName}
                 </h2>
                 <p className="text-xs text-slate-500 font-mono-nums">
-                  Tax Invoice #{selectedInvoice.supplierInvoiceNo} ·{' '}
-                  {selectedInvoice.supplierTaxPin || 'No ZIMRA BP #'}
+                  Tax Invoice #{selectedInvoice.supplierInvoiceNo} · TIN:{' '}
+                  {selectedInvoice.supplierTin ||
+                    selectedInvoice.supplierTaxPin ||
+                    'Not provided'}{' '}
+                  · VAT Reg #: {selectedInvoice.supplierVatReg || 'Non-VAT'}
                 </p>
               </div>
               <button
@@ -923,6 +1163,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
                       <th className="py-2 px-3">Description</th>
+                      <th className="py-2 px-3">Tax Code</th>
                       <th className="py-2 px-3 text-right">Qty</th>
                       <th className="py-2 px-3 text-right">Net</th>
                       <th className="py-2 px-3 text-right">VAT</th>
@@ -933,6 +1174,13 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                     {selectedInvoice.lines.map((line, i) => (
                       <tr key={i}>
                         <td className="py-2 px-3 text-slate-900">{line.description}</td>
+                        <td className="py-2 px-3 text-slate-600 whitespace-nowrap">
+                          {line.vatTreatment === 'standard'
+                            ? `VAT ${selectedInvoice.vatRate}%`
+                            : line.vatTreatment === 'zero'
+                              ? 'Zero 0%'
+                              : 'Exempt'}
+                        </td>
                         <td className="py-2 px-3 text-right font-mono-nums">
                           {line.quantity}
                         </td>
@@ -957,6 +1205,15 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                     <span className="text-slate-500">Status:</span>
                     <StatusText status={selectedInvoice.status} />
                   </div>
+                  {(selectedInvoice.whtAmount || 0) > 0 && (
+                    <div className="text-amber-800 font-mono-nums">
+                      ZIMRA WHT ({selectedInvoice.whtRate || 30}%):{' '}
+                      {formatMoney(selectedInvoice.whtAmount || 0, settings.currency)} ·{' '}
+                      {selectedInvoice.whtRemitted
+                        ? 'Remitted to ZIMRA'
+                        : 'Pending Remittance'}
+                    </div>
+                  )}
                   {selectedInvoice.paymentReference && (
                     <div className="text-slate-600 font-mono-nums">
                       Payment: {selectedInvoice.paymentMethod} · Ref{' '}
@@ -970,13 +1227,68 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
 
                 <div className="text-right font-mono-nums text-xs space-y-1">
                   <div>
-                    Paid: {formatMoney(selectedInvoice.amountPaid, settings.currency)}
+                    Settled: {formatMoney(selectedInvoice.amountPaid, settings.currency)}
                   </div>
                   <div className="text-sm font-bold text-amber-700">
                     Balance: {formatMoney(selectedInvoice.balanceDue, settings.currency)}
                   </div>
                 </div>
               </div>
+
+              {/* WHT Remittance to ZIMRA Action */}
+              {(selectedInvoice.whtAmount || 0) > 0 &&
+                !selectedInvoice.whtRemitted &&
+                (role === 'management' || role === 'accounts') && (
+                  <div className="border border-amber-200 bg-amber-50/70 rounded-md p-3.5 space-y-2.5">
+                    <div className="text-xs font-semibold text-amber-900">
+                      Remit Withholding Tax to ZIMRA (
+                      {formatMoney(selectedInvoice.whtAmount || 0, settings.currency)})
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <select
+                        value={remitAccount}
+                        onChange={(e) => setRemitAccount(e.target.value)}
+                        className="border border-amber-200 rounded px-2.5 py-1.5 text-xs bg-white"
+                      >
+                        {cashBookAccounts.map((acc) => (
+                          <option key={acc} value={acc}>
+                            {acc}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        value={remitRef}
+                        onChange={(e) => setRemitRef(e.target.value)}
+                        placeholder="ZIMRA WHT receipt / ZIPIT ref"
+                        className="border border-amber-200 rounded px-2.5 py-1.5 text-xs font-mono-nums bg-white"
+                      />
+                      <button
+                        type="button"
+                        disabled={remittingWht}
+                        onClick={async () => {
+                          setRemittingWht(true);
+                          try {
+                            await onRemitSupplierWht(
+                              selectedInvoice,
+                              remitAccount,
+                              remitRef
+                            );
+                            setSelectedInvoice({
+                              ...selectedInvoice,
+                              whtRemitted: true,
+                            });
+                          } finally {
+                            setRemittingWht(false);
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded bg-amber-700 text-white text-xs font-semibold hover:bg-amber-800 disabled:opacity-50"
+                      >
+                        {remittingWht ? 'Posting...' : 'Remit WHT to ZIMRA'}
+                      </button>
+                    </div>
+                  </div>
+                )}
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
                 <button
@@ -1028,28 +1340,84 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
               </button>
             </div>
             <form onSubmit={handlePaymentSubmit} className="p-5 space-y-4">
-              <div className="text-xs text-slate-600">
-                Supplier: <strong className="text-slate-900">{paymentModalInv.supplierName}</strong>
-                <br />
-                Balance Due:{' '}
-                <strong className="font-mono-nums text-amber-700">
-                  {formatMoney(paymentModalInv.balanceDue, settings.currency)}
-                </strong>
+              <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded p-2.5 flex justify-between">
+                <div>
+                  Supplier:{' '}
+                  <strong className="text-slate-900">
+                    {paymentModalInv.supplierName}
+                  </strong>
+                </div>
+                <div>
+                  Balance Due:{' '}
+                  <strong className="font-mono-nums text-amber-700">
+                    {formatMoney(paymentModalInv.balanceDue, settings.currency)}
+                  </strong>
+                </div>
               </div>
+
+              <div className="border border-slate-200 rounded-md p-3 space-y-2.5 bg-amber-50/40">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-medium text-slate-800">
+                    Withholding Tax Retained ({settings.currency})
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max={paymentModalInv.balanceDue}
+                    step="0.01"
+                    value={payWhtDeducted}
+                    onChange={(e) => {
+                      const wht = Math.max(
+                        0,
+                        Math.min(
+                          paymentModalInv.balanceDue,
+                          Number(e.target.value) || 0
+                        )
+                      );
+                      setPayWhtDeducted(e.target.value);
+                      setPayAmount(
+                        String(round2(Math.max(0, paymentModalInv.balanceDue - wht)))
+                      );
+                    }}
+                    className="w-28 border border-slate-200 rounded px-2.5 py-1 text-xs font-mono-nums bg-white text-right"
+                  />
+                </div>
+                {(Number(payWhtDeducted) || 0) > 0 && (
+                  <label className="inline-flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={payWhtRemitted}
+                      onChange={(e) => setPayWhtRemitted(e.target.checked)}
+                      className="rounded border-slate-300 text-amber-600"
+                    />
+                    <span>Mark WHT already remitted to ZIMRA</span>
+                  </label>
+                )}
+              </div>
+
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Payment Amount ({settings.currency})
+                  Net Cash Paid to Supplier ({settings.currency})
                 </label>
                 <input
                   type="number"
                   step="0.01"
-                  min="0.01"
+                  min="0"
                   max={paymentModalInv.balanceDue}
                   required
                   value={payAmount}
                   onChange={(e) => setPayAmount(e.target.value)}
                   className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
                 />
+                {(Number(payWhtDeducted) || 0) > 0 && (
+                  <div className="mt-1 text-[11px] text-slate-500 font-mono-nums">
+                    Invoice Settled:{' '}
+                    {formatMoney(
+                      (Number(payAmount) || 0) + (Number(payWhtDeducted) || 0),
+                      settings.currency
+                    )}
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">

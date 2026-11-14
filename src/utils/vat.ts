@@ -1,4 +1,4 @@
-import { Job, PricingMode, VatTreatment } from '../types/erp';
+import { InvoiceLine, Job, PricingMode, VatTreatment } from '../types/erp';
 
 export function round2(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -57,6 +57,83 @@ export function calculateVatBreakdown(params: {
     grossAmount: gross,
     effectiveVatRate: safeRate,
   };
+}
+
+export interface TaxClassSummary {
+  standardNetAmount: number;
+  zeroRatedAmount: number;
+  exemptAmount: number;
+  netAmount: number;
+  vatAmount: number;
+  grossAmount: number;
+}
+
+export function summarizeTaxBreakdown(
+  lines: Pick<InvoiceLine, 'vatTreatment' | 'netAmount' | 'vatAmount' | 'grossAmount'>[],
+  fallback?: {
+    vatTreatment?: VatTreatment;
+    netAmount: number;
+    vatAmount: number;
+    grossAmount: number;
+  }
+): TaxClassSummary {
+  if (!lines || lines.length === 0) {
+    const net = round2(fallback?.netAmount || 0);
+    const vat = round2(fallback?.vatAmount || 0);
+    const gross = round2(fallback?.grossAmount || 0);
+    const t = fallback?.vatTreatment || (vat > 0 ? 'standard' : 'exempt');
+    return {
+      standardNetAmount: t === 'standard' ? net : 0,
+      zeroRatedAmount: t === 'zero' ? net : 0,
+      exemptAmount: t === 'exempt' ? net : 0,
+      netAmount: net,
+      vatAmount: vat,
+      grossAmount: gross,
+    };
+  }
+
+  let standardNetAmount = 0;
+  let zeroRatedAmount = 0;
+  let exemptAmount = 0;
+  let netAmount = 0;
+  let vatAmount = 0;
+  let grossAmount = 0;
+
+  lines.forEach((l) => {
+    const n = Number(l.netAmount) || 0;
+    const v = Number(l.vatAmount) || 0;
+    const g = Number(l.grossAmount) || 0;
+    netAmount += n;
+    vatAmount += v;
+    grossAmount += g;
+    if (l.vatTreatment === 'zero') {
+      zeroRatedAmount += n;
+    } else if (l.vatTreatment === 'exempt') {
+      exemptAmount += n;
+    } else {
+      standardNetAmount += n;
+    }
+  });
+
+  return {
+    standardNetAmount: round2(standardNetAmount),
+    zeroRatedAmount: round2(zeroRatedAmount),
+    exemptAmount: round2(exemptAmount),
+    netAmount: round2(netAmount),
+    vatAmount: round2(vatAmount),
+    grossAmount: round2(grossAmount),
+  };
+}
+
+export function calculateWithholdingTax(params: {
+  applicable: boolean;
+  baseAmount: number;
+  ratePct: number;
+}): number {
+  if (!params.applicable) return 0;
+  const safeBase = Math.max(0, Number.isFinite(params.baseAmount) ? params.baseAmount : 0);
+  const safeRate = Math.max(0, Math.min(50, Number.isFinite(params.ratePct) ? params.ratePct : 0));
+  return round2((safeBase * safeRate) / 100);
 }
 
 export interface JobCostSummary {

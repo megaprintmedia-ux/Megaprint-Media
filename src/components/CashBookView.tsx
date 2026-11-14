@@ -48,6 +48,7 @@ const ENTRY_TYPES: CashBookEntryType[] = [
 const CATEGORIES: CashBookCategory[] = [
   'Customer Receipt',
   'Supplier Payment',
+  'Withholding Tax (ZIMRA)',
   'Sales Commission',
   'Wages & Casuals',
   'Transport & Fuel',

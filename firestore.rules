@@ -122,13 +122,16 @@ service cloud.firestore {
     function isValidCompanySettings(data) {
       return data.keys().hasAll(['companyName', 'currency', 'defaultVatRate', 'ownerUid', 'updatedAt']) &&
         data.keys().hasOnly([
-          'companyName', 'tagline', 'taxPin', 'address', 'phone', 'email',
-          'currency', 'defaultVatRate', 'defaultCommissionRatePct',
-          'defaultCommissionBasis', 'logoDataUrl', 'ownerUid', 'updatedAt'
+          'companyName', 'tagline', 'taxPin', 'zimraTin', 'vatRegNumber',
+          'address', 'phone', 'email', 'currency', 'defaultVatRate',
+          'defaultCommissionRatePct', 'defaultCommissionBasis', 'logoDataUrl',
+          'ownerUid', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.companyName, 120) &&
         (!('tagline' in data) || isOptionalStr(data.tagline, 200)) &&
         (!('taxPin' in data) || isOptionalStr(data.taxPin, 64)) &&
+        (!('zimraTin' in data) || isOptionalStr(data.zimraTin, 64)) &&
+        (!('vatRegNumber' in data) || isOptionalStr(data.vatRegNumber, 64)) &&
         (!('address' in data) || isOptionalStr(data.address, 300)) &&
         (!('phone' in data) || isOptionalStr(data.phone, 40)) &&
         (!('email' in data) || isOptionalStr(data.email, 200)) &&
@@ -143,12 +146,19 @@ service cloud.firestore {
 
     function isValidClient(data) {
       return data.keys().hasAll(['companyName', 'contactName', 'paymentTermsDays', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['companyName', 'contactName', 'email', 'phone', 'taxPin', 'address', 'paymentTermsDays', 'notes', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'companyName', 'contactName', 'email', 'phone', 'taxPin', 'zimraTin',
+          'vatRegNumber', 'isVatRegistered', 'address', 'paymentTermsDays',
+          'notes', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
         isNonEmptyStr(data.companyName, 160) &&
         isNonEmptyStr(data.contactName, 120) &&
         (!('email' in data) || isOptionalStr(data.email, 200)) &&
         (!('phone' in data) || isOptionalStr(data.phone, 40)) &&
         (!('taxPin' in data) || isOptionalStr(data.taxPin, 64)) &&
+        (!('zimraTin' in data) || isOptionalStr(data.zimraTin, 64)) &&
+        (!('vatRegNumber' in data) || isOptionalStr(data.vatRegNumber, 64)) &&
+        (!('isVatRegistered' in data) || data.isVatRegistered is bool) &&
         (!('address' in data) || isOptionalStr(data.address, 300)) &&
         data.paymentTermsDays is number && data.paymentTermsDays >= 0 && data.paymentTermsDays <= 365 &&
         (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
@@ -242,10 +252,11 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'invoiceNumber', 'jobId', 'jobNumber', 'clientId', 'clientName', 'clientVatPin',
-          'issueDate', 'dueDate', 'status', 'pricingMode', 'vatRate', 'lines',
-          'netAmount', 'vatAmount', 'grossAmount', 'amountPaid', 'balanceDue',
-          'paymentMethod', 'paymentReference', 'notes', 'ownerUid', 'staffUids',
-          'createdAt', 'updatedAt'
+          'clientTin', 'clientVatReg', 'issueDate', 'dueDate', 'status', 'pricingMode',
+          'vatRate', 'lines', 'standardNetAmount', 'zeroRatedAmount', 'exemptAmount',
+          'netAmount', 'vatAmount', 'grossAmount', 'whtRate', 'whtWithheldAmount',
+          'whtCertificateRef', 'amountPaid', 'balanceDue', 'paymentMethod',
+          'paymentReference', 'notes', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.invoiceNumber, 40) &&
         (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
@@ -253,15 +264,23 @@ service cloud.firestore {
         isValidId(data.clientId) &&
         isNonEmptyStr(data.clientName, 160) &&
         (!('clientVatPin' in data) || isOptionalStr(data.clientVatPin, 64)) &&
+        (!('clientTin' in data) || isOptionalStr(data.clientTin, 64)) &&
+        (!('clientVatReg' in data) || isOptionalStr(data.clientVatReg, 64)) &&
         isNonEmptyStr(data.issueDate, 32) &&
         isNonEmptyStr(data.dueDate, 32) &&
         data.status in ['Draft', 'Issued', 'Part Paid', 'Paid', 'Overdue', 'Void'] &&
         data.pricingMode in ['exclusive', 'inclusive'] &&
         data.vatRate is number && data.vatRate >= 0 && data.vatRate <= 50 &&
         data.lines is list && data.lines.size() >= 1 && data.lines.size() <= 10 && data.lines[0] is map &&
+        (!('standardNetAmount' in data) || isNonNegativeNum(data.standardNetAmount)) &&
+        (!('zeroRatedAmount' in data) || isNonNegativeNum(data.zeroRatedAmount)) &&
+        (!('exemptAmount' in data) || isNonNegativeNum(data.exemptAmount)) &&
         isNonNegativeNum(data.netAmount) &&
         isNonNegativeNum(data.vatAmount) &&
         isNonNegativeNum(data.grossAmount) &&
+        (!('whtRate' in data) || (data.whtRate is number && data.whtRate >= 0 && data.whtRate <= 50)) &&
+        (!('whtWithheldAmount' in data) || isNonNegativeNum(data.whtWithheldAmount)) &&
+        (!('whtCertificateRef' in data) || isOptionalStr(data.whtCertificateRef, 120)) &&
         isNonNegativeNum(data.amountPaid) &&
         isNonNegativeNum(data.balanceDue) &&
         (!('paymentMethod' in data) || isOptionalStr(data.paymentMethod, 60)) &&
@@ -280,14 +299,17 @@ service cloud.firestore {
           'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'expenseNumber', 'vendorName', 'vendorVatPin', 'vendorInvoiceRef', 'category',
-          'jobId', 'expenseDate', 'isVatClaimable', 'vatRate', 'netAmount', 'vatAmount',
-          'grossAmount', 'paymentStatus', 'notes', 'ownerUid', 'staffUids',
-          'createdAt', 'updatedAt'
+          'expenseNumber', 'vendorName', 'vendorVatPin', 'vendorTin', 'vendorVatReg',
+          'vendorInvoiceRef', 'category', 'jobId', 'expenseDate', 'vatTreatment',
+          'isVatClaimable', 'vatRate', 'netAmount', 'vatAmount', 'grossAmount',
+          'whtApplicable', 'whtRate', 'whtAmount', 'paymentStatus', 'notes',
+          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.expenseNumber, 40) &&
         isNonEmptyStr(data.vendorName, 160) &&
         (!('vendorVatPin' in data) || isOptionalStr(data.vendorVatPin, 64)) &&
+        (!('vendorTin' in data) || isOptionalStr(data.vendorTin, 64)) &&
+        (!('vendorVatReg' in data) || isOptionalStr(data.vendorVatReg, 64)) &&
         (!('vendorInvoiceRef' in data) || isOptionalStr(data.vendorInvoiceRef, 80)) &&
         data.category in [
           'Materials & Substrates', 'Tailoring & Trims', 'Payroll & Wages',
@@ -296,11 +318,15 @@ service cloud.firestore {
         ] &&
         (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
         isNonEmptyStr(data.expenseDate, 32) &&
+        (!('vatTreatment' in data) || data.vatTreatment in ['standard', 'zero', 'exempt']) &&
         data.isVatClaimable is bool &&
         data.vatRate is number && data.vatRate >= 0 && data.vatRate <= 50 &&
         isNonNegativeNum(data.netAmount) &&
         isNonNegativeNum(data.vatAmount) &&
         isNonNegativeNum(data.grossAmount) &&
+        (!('whtApplicable' in data) || data.whtApplicable is bool) &&
+        (!('whtRate' in data) || (data.whtRate is number && data.whtRate >= 0 && data.whtRate <= 50)) &&
+        (!('whtAmount' in data) || isNonNegativeNum(data.whtAmount)) &&
         data.paymentStatus in ['Paid', 'Payable'] &&
         (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
         isValidId(data.ownerUid) &&
@@ -458,16 +484,22 @@ service cloud.firestore {
           'ownerUid', 'viewerUids', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'recordNumber', 'supplierName', 'supplierTaxPin', 'supplierInvoiceNo',
+          'recordNumber', 'supplierName', 'supplierTaxPin', 'supplierTin',
+          'supplierVatReg', 'isVatRegistered', 'supplierInvoiceNo',
           'category', 'jobId', 'jobNumber', 'invoiceDate', 'dueDate',
           'pricingMode', 'vatTreatment', 'isVatClaimable', 'vatRate', 'lines',
-          'netAmount', 'vatAmount', 'grossAmount', 'amountPaid', 'balanceDue',
+          'standardNetAmount', 'zeroRatedAmount', 'exemptAmount',
+          'netAmount', 'vatAmount', 'grossAmount', 'whtApplicable', 'whtRate',
+          'whtAmount', 'whtRemitted', 'amountPaid', 'balanceDue',
           'status', 'paymentMethod', 'paymentReference', 'notes',
           'ownerUid', 'viewerUids', 'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.recordNumber, 40) &&
         isNonEmptyStr(data.supplierName, 160) &&
         (!('supplierTaxPin' in data) || isOptionalStr(data.supplierTaxPin, 64)) &&
+        (!('supplierTin' in data) || isOptionalStr(data.supplierTin, 64)) &&
+        (!('supplierVatReg' in data) || isOptionalStr(data.supplierVatReg, 64)) &&
+        (!('isVatRegistered' in data) || data.isVatRegistered is bool) &&
         isNonEmptyStr(data.supplierInvoiceNo, 80) &&
         data.category in [
           'Materials & Substrates', 'Tailoring & Trims',
@@ -483,9 +515,16 @@ service cloud.firestore {
         data.isVatClaimable is bool &&
         data.vatRate is number && data.vatRate >= 0 && data.vatRate <= 50 &&
         data.lines is list && data.lines.size() >= 1 && data.lines.size() <= 10 && data.lines[0] is map &&
+        (!('standardNetAmount' in data) || isNonNegativeNum(data.standardNetAmount)) &&
+        (!('zeroRatedAmount' in data) || isNonNegativeNum(data.zeroRatedAmount)) &&
+        (!('exemptAmount' in data) || isNonNegativeNum(data.exemptAmount)) &&
         isNonNegativeNum(data.netAmount) &&
         isNonNegativeNum(data.vatAmount) &&
         isNonNegativeNum(data.grossAmount) &&
+        (!('whtApplicable' in data) || data.whtApplicable is bool) &&
+        (!('whtRate' in data) || (data.whtRate is number && data.whtRate >= 0 && data.whtRate <= 50)) &&
+        (!('whtAmount' in data) || isNonNegativeNum(data.whtAmount)) &&
+        (!('whtRemitted' in data) || data.whtRemitted is bool) &&
         isNonNegativeNum(data.amountPaid) &&
         isNonNegativeNum(data.balanceDue) &&
         data.status in ['Unpaid', 'Part Paid', 'Paid', 'Disputed'] &&
@@ -601,9 +640,9 @@ service cloud.firestore {
         isNonEmptyStr(data.account, 120) &&
         isNonEmptyStr(data.counterparty, 160) &&
         data.category in [
-          'Customer Receipt', 'Supplier Payment', 'Wages & Casuals',
-          'Sales Commission', 'Transport & Fuel', 'Workshop Petty Cash',
-          'Bank Deposit / Transfer', 'Other Operating'
+          'Customer Receipt', 'Supplier Payment', 'Withholding Tax (ZIMRA)',
+          'Wages & Casuals', 'Sales Commission', 'Transport & Fuel',
+          'Workshop Petty Cash', 'Bank Deposit / Transfer', 'Other Operating'
         ] &&
         (!('reference' in data) || isOptionalStr(data.reference, 120)) &&
         (!('linkedDocRef' in data) || isOptionalStr(data.linkedDocRef, 80)) &&
@@ -769,6 +808,7 @@ service cloud.firestore {
           ((isSalesOrManagement() || isAccountsOrManagement()) &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'companyName', 'contactName', 'email', 'phone', 'taxPin',
+              'zimraTin', 'vatRegNumber', 'isVatRegistered',
               'address', 'paymentTermsDays', 'notes', 'staffUids', 'updatedAt'
             ])
           )
@@ -883,7 +923,8 @@ service cloud.firestore {
             isAccountsOrManagement() &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'status', 'amountPaid', 'balanceDue', 'paymentMethod',
-              'paymentReference', 'notes', 'dueDate', 'updatedAt'
+              'paymentReference', 'whtRate', 'whtWithheldAmount',
+              'whtCertificateRef', 'notes', 'dueDate', 'updatedAt'
             ])
           )
         );
@@ -915,7 +956,8 @@ service cloud.firestore {
         (
           isManagement() ||
           (isAccountsOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly([
-            'paymentStatus', 'vendorVatPin', 'vendorInvoiceRef', 'isVatClaimable', 'notes', 'updatedAt'
+            'paymentStatus', 'vendorVatPin', 'vendorTin', 'vendorVatReg',
+            'vendorInvoiceRef', 'vatTreatment', 'isVatClaimable', 'notes', 'updatedAt'
           ]))
         );
       allow delete: if isManagement() && isValidId(expenseId);
@@ -1115,8 +1157,9 @@ service cloud.firestore {
           isManagement() ||
           (isAccountsOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly([
             'status', 'amountPaid', 'balanceDue', 'paymentMethod',
-            'paymentReference', 'supplierTaxPin', 'isVatClaimable', 'notes',
-            'dueDate', 'updatedAt'
+            'paymentReference', 'supplierTaxPin', 'supplierTin', 'supplierVatReg',
+            'isVatRegistered', 'isVatClaimable', 'whtApplicable', 'whtRate',
+            'whtAmount', 'whtRemitted', 'notes', 'dueDate', 'updatedAt'
           ]))
         );
       allow delete: if isManagement() && isValidId(supplierInvoiceId);

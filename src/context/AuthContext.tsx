@@ -2,6 +2,8 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import {
   User,
   onAuthStateChanged,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut as firebaseSignOut,
 } from 'firebase/auth';
@@ -37,6 +39,9 @@ interface AuthContextValue {
   activeViewRole: UserRole;
   setActiveViewRole: (role: UserRole) => void;
   signInWithGoogle: () => Promise<void>;
+  signInWithEmail: (email: string, password: string) => Promise<void>;
+  sendPasswordReset: (email: string) => Promise<boolean>;
+  clearAuthError: () => void;
   signOut: () => Promise<void>;
 }
 
@@ -249,6 +254,77 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  const signInWithEmail = async (emailInput: string, passwordInput: string) => {
+    const cleanEmail = emailInput.trim();
+    if (!cleanEmail || !passwordInput) {
+      setAuthError('Please enter both your email address and password.');
+      return;
+    }
+    setSigningIn(true);
+    setAuthError(null);
+    try {
+      await signInWithEmailAndPassword(auth, cleanEmail, passwordInput);
+    } catch (error) {
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? String((error as { code?: string }).code)
+          : '';
+      if (code === 'auth/operation-not-allowed') {
+        setAuthError(
+          'Email/Password sign-in is not enabled in Firebase Console yet. Enable Email/Password under Firebase Console → Authentication → Sign-in method, or use Continue with Google below.'
+        );
+      } else if (
+        code === 'auth/invalid-credential' ||
+        code === 'auth/wrong-password' ||
+        code === 'auth/user-not-found'
+      ) {
+        setAuthError(
+          'Invalid email or password. If your account uses Google sign-in, click "Continue with Google" below.'
+        );
+      } else if (code === 'auth/too-many-requests') {
+        setAuthError('Too many failed attempts. Please wait a moment and try again.');
+      } else {
+        setAuthError(
+          error instanceof Error ? error.message : 'Unable to sign in with email.'
+        );
+      }
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  const sendPasswordReset = async (emailInput: string): Promise<boolean> => {
+    const cleanEmail = emailInput.trim();
+    if (!cleanEmail) {
+      setAuthError('Enter your email address above first to reset your password.');
+      return false;
+    }
+    setAuthError(null);
+    try {
+      await sendPasswordResetEmail(auth, cleanEmail);
+      return true;
+    } catch (error) {
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? String((error as { code?: string }).code)
+          : '';
+      if (code === 'auth/operation-not-allowed') {
+        setAuthError(
+          'Email/Password sign-in is not enabled in Firebase Console yet. Enable Email/Password under Authentication → Sign-in method.'
+        );
+      } else {
+        setAuthError(
+          error instanceof Error
+            ? error.message
+            : 'Unable to send password reset email.'
+        );
+      }
+      return false;
+    }
+  };
+
+  const clearAuthError = () => setAuthError(null);
+
   const signOut = async () => {
     setAuthError(null);
     await firebaseSignOut(auth);
@@ -265,6 +341,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         activeViewRole,
         setActiveViewRole,
         signInWithGoogle,
+        signInWithEmail,
+        sendPasswordReset,
+        clearAuthError,
         signOut,
       }}
     >

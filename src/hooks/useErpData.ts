@@ -52,6 +52,7 @@ import {
   calculateJobCommission,
   calculateVatBreakdown,
   round2,
+  summarizeTaxBreakdown,
 } from '../utils/vat';
 
 function mapMethodToCashAccount(
@@ -102,6 +103,8 @@ export function useErpData() {
     companyName: 'Megaprint',
     tagline: 'Printing · Branding · Corporate Wear · Tailoring',
     taxPin: 'BP 0200148291',
+    zimraTin: '2000148291',
+    vatRegNumber: '10048291',
     address: 'Workington Industrial Area, Coventry Road, Harare',
     phone: '+263 77 200 0000',
     email: 'megaprintmedia@gmail.com',
@@ -523,6 +526,8 @@ export function useErpData() {
       companyName: trimStr(updates.companyName ?? settings.companyName, 120) || 'Megaprint',
       tagline: trimStr(updates.tagline ?? settings.tagline, 200),
       taxPin: trimStr(updates.taxPin ?? settings.taxPin, 64),
+      zimraTin: trimStr(updates.zimraTin ?? settings.zimraTin, 64),
+      vatRegNumber: trimStr(updates.vatRegNumber ?? settings.vatRegNumber, 64),
       address: trimStr(updates.address ?? settings.address, 300),
       phone: trimStr(updates.phone ?? settings.phone, 40),
       email: trimStr(updates.email ?? settings.email, 200),
@@ -592,6 +597,7 @@ export function useErpData() {
     input: Omit<Client, 'id' | 'ownerUid' | 'staffUids' | 'createdAt' | 'updatedAt'>
   ) => {
     if (!user) return;
+    const cleanVatReg = trimStr(input.vatRegNumber, 64);
     try {
       const ref = await addDoc(collection(db, 'clients'), {
         companyName: trimStr(input.companyName, 160),
@@ -599,6 +605,9 @@ export function useErpData() {
         email: trimStr(input.email, 200),
         phone: trimStr(input.phone, 40),
         taxPin: trimStr(input.taxPin, 64),
+        zimraTin: trimStr(input.zimraTin, 64),
+        vatRegNumber: cleanVatReg,
+        isVatRegistered: Boolean(input.isVatRegistered ?? Boolean(cleanVatReg)),
         address: trimStr(input.address, 300),
         paymentTermsDays: Math.max(0, Math.min(365, Number(input.paymentTermsDays) || 30)),
         notes: trimStr(input.notes, 1000),
@@ -624,6 +633,11 @@ export function useErpData() {
       if (input.email !== undefined) clean.email = trimStr(input.email, 200);
       if (input.phone !== undefined) clean.phone = trimStr(input.phone, 40);
       if (input.taxPin !== undefined) clean.taxPin = trimStr(input.taxPin, 64);
+      if (input.zimraTin !== undefined) clean.zimraTin = trimStr(input.zimraTin, 64);
+      if (input.vatRegNumber !== undefined)
+        clean.vatRegNumber = trimStr(input.vatRegNumber, 64);
+      if (input.isVatRegistered !== undefined)
+        clean.isVatRegistered = Boolean(input.isVatRegistered);
       if (input.address !== undefined) clean.address = trimStr(input.address, 300);
       if (input.paymentTermsDays !== undefined)
         clean.paymentTermsDays = Math.max(0, Math.min(365, Number(input.paymentTermsDays) || 0));
@@ -808,6 +822,12 @@ export function useErpData() {
     input: Omit<Invoice, 'id' | 'ownerUid' | 'staffUids' | 'createdAt' | 'updatedAt'>
   ) => {
     if (!user) return;
+    const boundedLines = input.lines.slice(0, 10);
+    const taxSummary = summarizeTaxBreakdown(boundedLines, {
+      netAmount: input.netAmount,
+      vatAmount: input.vatAmount,
+      grossAmount: input.grossAmount,
+    });
     try {
       const ref = await addDoc(collection(db, 'invoices'), {
         invoiceNumber: trimStr(input.invoiceNumber, 40),
@@ -816,15 +836,29 @@ export function useErpData() {
         clientId: input.clientId,
         clientName: trimStr(input.clientName, 160),
         clientVatPin: trimStr(input.clientVatPin, 64),
+        clientTin: trimStr(input.clientTin, 64),
+        clientVatReg: trimStr(input.clientVatReg, 64),
         issueDate: trimStr(input.issueDate, 32),
         dueDate: trimStr(input.dueDate, 32),
         status: input.status,
         pricingMode: input.pricingMode,
         vatRate: Math.max(0, Math.min(50, Number(input.vatRate) || 0)),
-        lines: input.lines.slice(0, 10),
+        lines: boundedLines,
+        standardNetAmount: Math.max(
+          0,
+          round2(input.standardNetAmount ?? taxSummary.standardNetAmount)
+        ),
+        zeroRatedAmount: Math.max(
+          0,
+          round2(input.zeroRatedAmount ?? taxSummary.zeroRatedAmount)
+        ),
+        exemptAmount: Math.max(0, round2(input.exemptAmount ?? taxSummary.exemptAmount)),
         netAmount: Math.max(0, round2(input.netAmount)),
         vatAmount: Math.max(0, round2(input.vatAmount)),
         grossAmount: Math.max(0, round2(input.grossAmount)),
+        whtRate: Math.max(0, Math.min(50, Number(input.whtRate) || 0)),
+        whtWithheldAmount: Math.max(0, round2(Number(input.whtWithheldAmount) || 0)),
+        whtCertificateRef: trimStr(input.whtCertificateRef, 120),
         amountPaid: Math.max(0, round2(input.amountPaid)),
         balanceDue: Math.max(0, round2(input.balanceDue)),
         paymentMethod: trimStr(input.paymentMethod, 60),
@@ -846,23 +880,52 @@ export function useErpData() {
     paymentAmount: number,
     method: string,
     reference: string,
-    cashBookAccount?: string
+    cashBookAccount?: string,
+    options?: {
+      whtWithheld?: number;
+      whtRate?: number;
+      whtCertificateRef?: string;
+    }
   ) => {
     const cleanPay = Math.max(0, round2(paymentAmount));
-    const newPaid = round2(Math.min(invoice.grossAmount, invoice.amountPaid + cleanPay));
+    const cleanWht = Math.max(0, round2(options?.whtWithheld || 0));
+    const totalSettled = round2(cleanPay + cleanWht);
+    if (totalSettled <= 0) return;
+
+    const newPaid = round2(
+      Math.min(invoice.grossAmount, invoice.amountPaid + totalSettled)
+    );
     const newBalance = round2(Math.max(0, invoice.grossAmount - newPaid));
     const nextStatus: Invoice['status'] =
       newBalance <= 0.01 ? 'Paid' : newPaid > 0 ? 'Part Paid' : invoice.status;
+    const nextWhtTotal = round2((invoice.whtWithheldAmount || 0) + cleanWht);
+    const inferredWhtRate =
+      options?.whtRate !== undefined
+        ? options.whtRate
+        : cleanWht > 0 && invoice.netAmount > 0
+          ? round2((cleanWht / invoice.netAmount) * 100)
+          : invoice.whtRate || 0;
+
     try {
       const batch = writeBatch(db);
-      batch.update(doc(db, 'invoices', invoice.id), {
+      const invUpdate: Record<string, unknown> = {
         amountPaid: newPaid,
         balanceDue: newBalance,
         status: nextStatus,
         paymentMethod: trimStr(method, 60),
         paymentReference: trimStr(reference, 120),
         updatedAt: serverTimestamp(),
-      });
+      };
+      if (cleanWht > 0 || options?.whtCertificateRef) {
+        invUpdate.whtWithheldAmount = nextWhtTotal;
+        invUpdate.whtRate = Math.max(0, Math.min(50, round2(Number(inferredWhtRate) || 0)));
+        invUpdate.whtCertificateRef = trimStr(
+          options?.whtCertificateRef || invoice.whtCertificateRef,
+          120
+        );
+      }
+      batch.update(doc(db, 'invoices', invoice.id), invUpdate);
+
       if (user && profile && isAccountsOrMgmt && cleanPay > 0) {
         const cbRef = doc(collection(db, 'cashBookEntries'));
         batch.set(cbRef, {
@@ -879,27 +942,32 @@ export function useErpData() {
           amount: cleanPay,
           reconciled: false,
           recordedByName: trimStr(profile.displayName, 120) || 'Accounts',
-          notes: `Auto-posted from Invoice ${invoice.invoiceNumber}`,
+          notes:
+            cleanWht > 0
+              ? `Auto-posted from Invoice ${invoice.invoiceNumber} (after ${cleanWht.toFixed(
+                  2
+                )} WHT withheld)`
+              : `Auto-posted from Invoice ${invoice.invoiceNumber}`,
           ownerUid: user.uid,
           viewerUids: hrViewerUids,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+      }
 
-        // Mark linked job commission Earned once customer pays invoice in full
-        if (nextStatus === 'Paid' && invoice.jobId) {
-          const linkedJob = jobs.find((j) => j.id === invoice.jobId);
-          if (
-            linkedJob &&
-            linkedJob.status !== 'Cancelled' &&
-            (!linkedJob.commissionStatus || linkedJob.commissionStatus === 'Pending') &&
-            (linkedJob.commissionAmount || 0) > 0
-          ) {
-            batch.update(doc(db, 'jobs', linkedJob.id), {
-              commissionStatus: 'Earned',
-              updatedAt: serverTimestamp(),
-            });
-          }
+      // Mark linked job commission Earned once customer pays invoice in full
+      if (user && profile && isAccountsOrMgmt && nextStatus === 'Paid' && invoice.jobId) {
+        const linkedJob = jobs.find((j) => j.id === invoice.jobId);
+        if (
+          linkedJob &&
+          linkedJob.status !== 'Cancelled' &&
+          (!linkedJob.commissionStatus || linkedJob.commissionStatus === 'Pending') &&
+          (linkedJob.commissionAmount || 0) > 0
+        ) {
+          batch.update(doc(db, 'jobs', linkedJob.id), {
+            commissionStatus: 'Earned',
+            updatedAt: serverTimestamp(),
+          });
         }
       }
       await batch.commit();
@@ -923,20 +991,28 @@ export function useErpData() {
     input: Omit<Expense, 'id' | 'ownerUid' | 'staffUids' | 'createdAt' | 'updatedAt'>
   ) => {
     if (!user) return;
+    const treatment =
+      input.vatTreatment ?? (input.isVatClaimable ? 'standard' : 'exempt');
     try {
       await addDoc(collection(db, 'expenses'), {
         expenseNumber: trimStr(input.expenseNumber, 40),
         vendorName: trimStr(input.vendorName, 160),
         vendorVatPin: trimStr(input.vendorVatPin, 64),
+        vendorTin: trimStr(input.vendorTin, 64),
+        vendorVatReg: trimStr(input.vendorVatReg, 64),
         vendorInvoiceRef: trimStr(input.vendorInvoiceRef, 80),
         category: input.category,
         jobId: trimStr(input.jobId, 128),
         expenseDate: trimStr(input.expenseDate, 32),
-        isVatClaimable: Boolean(input.isVatClaimable),
+        vatTreatment: treatment,
+        isVatClaimable: Boolean(input.isVatClaimable && treatment === 'standard'),
         vatRate: Math.max(0, Math.min(50, Number(input.vatRate) || 0)),
         netAmount: Math.max(0, round2(input.netAmount)),
         vatAmount: Math.max(0, round2(input.vatAmount)),
         grossAmount: Math.max(0, round2(input.grossAmount)),
+        whtApplicable: Boolean(input.whtApplicable),
+        whtRate: Math.max(0, Math.min(50, Number(input.whtRate) || 0)),
+        whtAmount: Math.max(0, round2(Number(input.whtAmount) || 0)),
         paymentStatus: input.paymentStatus,
         notes: trimStr(input.notes, 1000),
         ownerUid: user.uid,
@@ -1174,11 +1250,22 @@ export function useErpData() {
     input: Omit<SupplierInvoice, 'id' | 'ownerUid' | 'viewerUids' | 'createdAt' | 'updatedAt'>
   ) => {
     if (!user) return;
+    const boundedLines = input.lines.slice(0, 10);
+    const taxSummary = summarizeTaxBreakdown(boundedLines, {
+      vatTreatment: input.vatTreatment,
+      netAmount: input.netAmount,
+      vatAmount: input.vatAmount,
+      grossAmount: input.grossAmount,
+    });
+    const cleanVatReg = trimStr(input.supplierVatReg, 64);
     try {
       const ref = await addDoc(collection(db, 'supplierInvoices'), {
         recordNumber: trimStr(input.recordNumber, 40),
         supplierName: trimStr(input.supplierName, 160),
         supplierTaxPin: trimStr(input.supplierTaxPin, 64),
+        supplierTin: trimStr(input.supplierTin, 64),
+        supplierVatReg: cleanVatReg,
+        isVatRegistered: Boolean(input.isVatRegistered ?? Boolean(cleanVatReg || input.supplierTaxPin)),
         supplierInvoiceNo: trimStr(input.supplierInvoiceNo, 80),
         category: input.category,
         jobId: trimStr(input.jobId, 128),
@@ -1189,10 +1276,23 @@ export function useErpData() {
         vatTreatment: input.vatTreatment,
         isVatClaimable: Boolean(input.isVatClaimable),
         vatRate: Math.max(0, Math.min(50, Number(input.vatRate) || 0)),
-        lines: input.lines.slice(0, 10),
+        lines: boundedLines,
+        standardNetAmount: Math.max(
+          0,
+          round2(input.standardNetAmount ?? taxSummary.standardNetAmount)
+        ),
+        zeroRatedAmount: Math.max(
+          0,
+          round2(input.zeroRatedAmount ?? taxSummary.zeroRatedAmount)
+        ),
+        exemptAmount: Math.max(0, round2(input.exemptAmount ?? taxSummary.exemptAmount)),
         netAmount: Math.max(0, round2(input.netAmount)),
         vatAmount: Math.max(0, round2(input.vatAmount)),
         grossAmount: Math.max(0, round2(input.grossAmount)),
+        whtApplicable: Boolean(input.whtApplicable),
+        whtRate: Math.max(0, Math.min(50, Number(input.whtRate) || 0)),
+        whtAmount: Math.max(0, round2(Number(input.whtAmount) || 0)),
+        whtRemitted: Boolean(input.whtRemitted),
         amountPaid: Math.max(0, round2(input.amountPaid)),
         balanceDue: Math.max(0, round2(input.balanceDue)),
         status: input.status,
@@ -1215,25 +1315,45 @@ export function useErpData() {
     paymentAmount: number,
     method: string,
     reference: string,
-    cashBookAccount?: string
+    cashBookAccount?: string,
+    options?: {
+      whtDeducted?: number;
+      whtRemitted?: boolean;
+    }
   ) => {
     const cleanPay = Math.max(0, round2(paymentAmount));
+    const cleanWht = Math.max(0, round2(options?.whtDeducted || 0));
+    const totalSettled = round2(cleanPay + cleanWht);
+    if (totalSettled <= 0) return;
+
     const newPaid = round2(
-      Math.min(supplierInvoice.grossAmount, supplierInvoice.amountPaid + cleanPay)
+      Math.min(supplierInvoice.grossAmount, supplierInvoice.amountPaid + totalSettled)
     );
     const newBalance = round2(Math.max(0, supplierInvoice.grossAmount - newPaid));
     const nextStatus: SupplierInvoice['status'] =
       newBalance <= 0.01 ? 'Paid' : newPaid > 0 ? 'Part Paid' : 'Unpaid';
     try {
       const batch = writeBatch(db);
-      batch.update(doc(db, 'supplierInvoices', supplierInvoice.id), {
+      const siUpdate: Record<string, unknown> = {
         amountPaid: newPaid,
         balanceDue: newBalance,
         status: nextStatus,
         paymentMethod: trimStr(method, 60),
         paymentReference: trimStr(reference, 120),
         updatedAt: serverTimestamp(),
-      });
+      };
+      if (cleanWht > 0) {
+        siUpdate.whtApplicable = true;
+        siUpdate.whtAmount = Math.max(
+          cleanWht,
+          round2(supplierInvoice.whtAmount || 0)
+        );
+        if (options?.whtRemitted !== undefined) {
+          siUpdate.whtRemitted = Boolean(options.whtRemitted);
+        }
+      }
+      batch.update(doc(db, 'supplierInvoices', supplierInvoice.id), siUpdate);
+
       if (user && profile && isAccountsOrMgmt && cleanPay > 0) {
         const cbRef = doc(collection(db, 'cashBookEntries'));
         batch.set(cbRef, {
@@ -1253,7 +1373,12 @@ export function useErpData() {
           amount: cleanPay,
           reconciled: false,
           recordedByName: trimStr(profile.displayName, 120) || 'Accounts',
-          notes: `Auto-posted from Supplier Voucher ${supplierInvoice.recordNumber}`,
+          notes:
+            cleanWht > 0
+              ? `Auto-posted from Supplier Voucher ${supplierInvoice.recordNumber} (WHT ${cleanWht.toFixed(
+                  2
+                )} withheld)`
+              : `Auto-posted from Supplier Voucher ${supplierInvoice.recordNumber}`,
           ownerUid: user.uid,
           viewerUids: hrViewerUids,
           createdAt: serverTimestamp(),
@@ -1270,12 +1395,72 @@ export function useErpData() {
     }
   };
 
+  const markSupplierWhtRemitted = async (
+    supplierInvoice: SupplierInvoice,
+    cashBookAccount?: string,
+    reference?: string
+  ) => {
+    if (!user || !profile || !isAccountsOrMgmt) return;
+    const whtAmt = round2(Math.max(0, supplierInvoice.whtAmount || 0));
+    if (whtAmt <= 0 || supplierInvoice.whtRemitted) return;
+    const chosenAcc =
+      (cashBookAccount && cashBookAccount.trim()) || DEFAULT_ZIM_CASH_ACCOUNTS[0];
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'supplierInvoices', supplierInvoice.id), {
+        whtRemitted: true,
+        updatedAt: serverTimestamp(),
+      });
+      batch.set(doc(collection(db, 'cashBookEntries')), {
+        entryNumber: `CB-${new Date().getFullYear()}-${String(
+          1 + cashBookEntries.length
+        ).padStart(3, '0')}`,
+        entryDate: new Date().toISOString().slice(0, 10),
+        entryType: 'Payment (Outflow)',
+        account: chosenAcc,
+        counterparty: 'ZIMRA (Withholding Tax)',
+        category: 'Withholding Tax (ZIMRA)',
+        reference:
+          trimStr(reference, 120) || `WHT-${supplierInvoice.recordNumber}`,
+        linkedDocRef: trimStr(
+          supplierInvoice.supplierInvoiceNo || supplierInvoice.recordNumber,
+          80
+        ),
+        amount: whtAmt,
+        reconciled: false,
+        recordedByName: trimStr(profile.displayName, 120) || 'Accounts',
+        notes: `ZIMRA Withholding Tax remittance for ${supplierInvoice.supplierName} (${supplierInvoice.recordNumber})`,
+        ownerUid: user.uid,
+        viewerUids: hrViewerUids,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `supplierInvoices/${supplierInvoice.id}`
+      );
+    }
+  };
+
   const updateSupplierInvoiceVatStatus = async (
     supplierInvoiceId: string,
     updates: Partial<
       Pick<
         SupplierInvoice,
-        'status' | 'isVatClaimable' | 'supplierTaxPin' | 'notes'
+        | 'status'
+        | 'isVatClaimable'
+        | 'supplierTaxPin'
+        | 'supplierTin'
+        | 'supplierVatReg'
+        | 'isVatRegistered'
+        | 'whtApplicable'
+        | 'whtRate'
+        | 'whtAmount'
+        | 'whtRemitted'
+        | 'notes'
       >
     >
   ) => {
@@ -1286,6 +1471,20 @@ export function useErpData() {
         clean.isVatClaimable = Boolean(updates.isVatClaimable);
       if (updates.supplierTaxPin !== undefined)
         clean.supplierTaxPin = trimStr(updates.supplierTaxPin, 64);
+      if (updates.supplierTin !== undefined)
+        clean.supplierTin = trimStr(updates.supplierTin, 64);
+      if (updates.supplierVatReg !== undefined)
+        clean.supplierVatReg = trimStr(updates.supplierVatReg, 64);
+      if (updates.isVatRegistered !== undefined)
+        clean.isVatRegistered = Boolean(updates.isVatRegistered);
+      if (updates.whtApplicable !== undefined)
+        clean.whtApplicable = Boolean(updates.whtApplicable);
+      if (updates.whtRate !== undefined)
+        clean.whtRate = Math.max(0, Math.min(50, Number(updates.whtRate) || 0));
+      if (updates.whtAmount !== undefined)
+        clean.whtAmount = Math.max(0, round2(Number(updates.whtAmount) || 0));
+      if (updates.whtRemitted !== undefined)
+        clean.whtRemitted = Boolean(updates.whtRemitted);
       if (updates.notes !== undefined) clean.notes = trimStr(updates.notes, 1000);
       await updateDoc(doc(db, 'supplierInvoices', supplierInvoiceId), clean);
     } catch (error) {
@@ -2213,6 +2412,9 @@ export function useErpData() {
         email: 'procurement@msasalogistics.co.zw',
         phone: '+263 77 234 5678',
         taxPin: 'BP 0200881920',
+        zimraTin: '2000881920',
+        vatRegNumber: '10088192',
+        isVatRegistered: true,
         address: 'Msasa Industrial Park, Harare',
         paymentTermsDays: 30,
         notes: 'Fleet branding & driver reflective workwear account',
@@ -2227,6 +2429,9 @@ export function useErpData() {
         email: 'events@vicfallslodge.co.zw',
         phone: '+263 71 889 1020',
         taxPin: 'BP 0200441209',
+        zimraTin: '2000441209',
+        vatRegNumber: '10044120',
+        isVatRegistered: true,
         address: 'Stand 471B Squire Cummings Rd, Victoria Falls',
         paymentTermsDays: 14,
         notes: 'Bespoke concierge suits & embroidered hospitality uniforms',
@@ -2241,6 +2446,9 @@ export function useErpData() {
         email: 'tatenda@zimtech.co.zw',
         phone: '+263 78 410 9221',
         taxPin: 'BP 0200772011',
+        zimraTin: '2000772011',
+        vatRegNumber: '10077201',
+        isVatRegistered: true,
         address: 'Borrowdale Office Park, Harare',
         paymentTermsDays: 7,
         notes: 'Conference pull-up banners, lanyards & branded corporate wear',
@@ -2514,6 +2722,8 @@ export function useErpData() {
         clientId: c3.id,
         clientName: 'ZimTech Summit Harare',
         clientVatPin: 'BP 0200772011',
+        clientTin: '2000772011',
+        clientVatReg: '10077201',
         issueDate: today,
         dueDate: in5Days,
         status: 'Paid',
@@ -2530,9 +2740,15 @@ export function useErpData() {
             grossAmount: j3Vat.grossAmount,
           },
         ],
+        standardNetAmount: j3Vat.netAmount,
+        zeroRatedAmount: 0,
+        exemptAmount: 0,
         netAmount: j3Vat.netAmount,
         vatAmount: j3Vat.vatAmount,
         grossAmount: j3Vat.grossAmount,
+        whtRate: 0,
+        whtWithheldAmount: 0,
+        whtCertificateRef: '',
         amountPaid: j3Vat.grossAmount,
         balanceDue: 0,
         paymentMethod: 'CBZ Nostro USD',
@@ -2553,6 +2769,8 @@ export function useErpData() {
         clientId: c1.id,
         clientName: 'Msasa Logistics (Pvt) Ltd',
         clientVatPin: 'BP 0200881920',
+        clientTin: '2000881920',
+        clientVatReg: '10088192',
         issueDate: today,
         dueDate: in10Days,
         status: 'Part Paid',
@@ -2569,9 +2787,15 @@ export function useErpData() {
             grossAmount: j1Vat.grossAmount,
           },
         ],
+        standardNetAmount: j1Vat.netAmount,
+        zeroRatedAmount: 0,
+        exemptAmount: 0,
         netAmount: j1Vat.netAmount,
         vatAmount: j1Vat.vatAmount,
         grossAmount: j1Vat.grossAmount,
+        whtRate: 0,
+        whtWithheldAmount: 0,
+        whtCertificateRef: '',
         amountPaid: inv2Deposit,
         balanceDue: round2(j1Vat.grossAmount - inv2Deposit),
         paymentMethod: 'EcoCash Merchant Till',
@@ -2595,15 +2819,21 @@ export function useErpData() {
         expenseNumber: 'EXP-2026-201',
         vendorName: 'David Whitehead Textiles Zimbabwe',
         vendorVatPin: 'BP 0200109381',
+        vendorTin: '2000109381',
+        vendorVatReg: '10010938',
         vendorInvoiceRef: 'DW-7741',
         category: 'Tailoring & Trims',
         jobId: j1.id,
         expenseDate: today,
+        vatTreatment: 'standard',
         isVatClaimable: true,
         vatRate,
         netAmount: e1Vat.netAmount,
         vatAmount: e1Vat.vatAmount,
         grossAmount: e1Vat.grossAmount,
+        whtApplicable: false,
+        whtRate: 0,
+        whtAmount: 0,
         paymentStatus: 'Paid',
         notes: '240gsm cotton pique rolls for Msasa Logistics order',
         ownerUid: user.uid,
@@ -2623,15 +2853,21 @@ export function useErpData() {
         expenseNumber: 'EXP-2026-202',
         vendorName: 'Harare Print & Substrate Supplies',
         vendorVatPin: 'BP 0200662901',
+        vendorTin: '2000662901',
+        vendorVatReg: '10066290',
         vendorInvoiceRef: 'HPS-33190',
         category: 'Materials & Substrates',
         jobId: j3.id,
         expenseDate: today,
+        vatTreatment: 'standard',
         isVatClaimable: true,
         vatRate,
         netAmount: e2Vat.netAmount,
         vatAmount: e2Vat.vatAmount,
         grossAmount: e2Vat.grossAmount,
+        whtApplicable: false,
+        whtRate: 0,
+        whtAmount: 0,
         paymentStatus: 'Paid',
         notes: '300gsm art card, CMYK offset inks & PVC banner media',
         ownerUid: user.uid,
@@ -2645,17 +2881,23 @@ export function useErpData() {
         expenseNumber: 'EXP-2026-203',
         vendorName: 'Workington Industrial Properties',
         vendorVatPin: '',
+        vendorTin: '2000510099',
+        vendorVatReg: '',
         vendorInvoiceRef: 'RENT-HARARE',
         category: 'Utilities & Rent',
         jobId: '',
         expenseDate: today,
+        vatTreatment: 'exempt',
         isVatClaimable: false,
         vatRate: 0,
         netAmount: 850,
         vatAmount: 0,
         grossAmount: 850,
+        whtApplicable: false,
+        whtRate: 0,
+        whtAmount: 0,
         paymentStatus: 'Paid',
-        notes: 'Workington print floor & tailoring studio monthly lease',
+        notes: 'Workington print floor & tailoring studio monthly lease (VAT Exempt)',
         ownerUid: user.uid,
         staffUids,
         createdAt: serverTimestamp(),
@@ -2861,6 +3103,9 @@ export function useErpData() {
         recordNumber: 'SI-2026-001',
         supplierName: 'David Whitehead Textiles Zimbabwe',
         supplierTaxPin: 'BP 0200109381',
+        supplierTin: '2000109381',
+        supplierVatReg: '10010938',
+        isVatRegistered: true,
         supplierInvoiceNo: 'FDMS-DW-44910',
         category: 'Tailoring & Trims',
         jobId: j1.id,
@@ -2882,9 +3127,16 @@ export function useErpData() {
             grossAmount: si1Vat.grossAmount,
           },
         ],
+        standardNetAmount: si1Vat.netAmount,
+        zeroRatedAmount: 0,
+        exemptAmount: 0,
         netAmount: si1Vat.netAmount,
         vatAmount: si1Vat.vatAmount,
         grossAmount: si1Vat.grossAmount,
+        whtApplicable: false,
+        whtRate: 0,
+        whtAmount: 0,
+        whtRemitted: false,
         amountPaid: si1Vat.grossAmount,
         balanceDue: 0,
         status: 'Paid',
@@ -2908,6 +3160,9 @@ export function useErpData() {
         recordNumber: 'SI-2026-002',
         supplierName: '3M & Graphics Zimbabwe',
         supplierTaxPin: 'BP 0200332819',
+        supplierTin: '2000332819',
+        supplierVatReg: '10033281',
+        isVatRegistered: true,
         supplierInvoiceNo: 'FDMS-883421',
         category: 'Materials & Substrates',
         jobId: j4.id,
@@ -2929,9 +3184,16 @@ export function useErpData() {
             grossAmount: si2Vat.grossAmount,
           },
         ],
+        standardNetAmount: si2Vat.netAmount,
+        zeroRatedAmount: 0,
+        exemptAmount: 0,
         netAmount: si2Vat.netAmount,
         vatAmount: si2Vat.vatAmount,
         grossAmount: si2Vat.grossAmount,
+        whtApplicable: false,
+        whtRate: 0,
+        whtAmount: 0,
+        whtRemitted: false,
         amountPaid: round2(si2Vat.grossAmount * 0.5),
         balanceDue: round2(si2Vat.grossAmount * 0.5),
         status: 'Part Paid',
@@ -3214,6 +3476,7 @@ export function useErpData() {
     toggleExpensePaymentStatus,
     createSupplierInvoice,
     recordSupplierPayment,
+    markSupplierWhtRemitted,
     updateSupplierInvoiceVatStatus,
     deleteSupplierInvoice,
     createInventoryItem,

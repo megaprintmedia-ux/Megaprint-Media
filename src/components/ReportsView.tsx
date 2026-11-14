@@ -12,7 +12,12 @@ import {
   TimeEntry,
   UserRole,
 } from '../types/erp';
-import { calculateJobCosting, formatMoney, round2 } from '../utils/vat';
+import {
+  calculateJobCosting,
+  formatMoney,
+  round2,
+  summarizeTaxBreakdown,
+} from '../utils/vat';
 import { BrandLogo } from './BrandLogo';
 import { StatusText } from './StatusText';
 
@@ -103,6 +108,41 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     const receivables = round2(scopedInvoices.reduce((a, i) => a + i.balanceDue, 0));
     const collectedCash = round2(scopedInvoices.reduce((a, i) => a + i.amountPaid, 0));
 
+    let outputStandardNet = 0;
+    let outputZeroRated = 0;
+    let outputExempt = 0;
+    scopedInvoices.forEach((i) => {
+      const sum = summarizeTaxBreakdown(i.lines || [], {
+        netAmount: i.netAmount,
+        vatAmount: i.vatAmount,
+        grossAmount: i.grossAmount,
+      });
+      outputStandardNet += i.standardNetAmount ?? sum.standardNetAmount;
+      outputZeroRated += i.zeroRatedAmount ?? sum.zeroRatedAmount;
+      outputExempt += i.exemptAmount ?? sum.exemptAmount;
+    });
+
+    let inputStandardNet = 0;
+    let inputZeroRated = 0;
+    let inputExempt = 0;
+    scopedSupplierInvoices.forEach((s) => {
+      const sum = summarizeTaxBreakdown(s.lines || [], {
+        vatTreatment: s.vatTreatment,
+        netAmount: s.netAmount,
+        vatAmount: s.vatAmount,
+        grossAmount: s.grossAmount,
+      });
+      inputStandardNet += s.standardNetAmount ?? sum.standardNetAmount;
+      inputZeroRated += s.zeroRatedAmount ?? sum.zeroRatedAmount;
+      inputExempt += s.exemptAmount ?? sum.exemptAmount;
+    });
+    scopedExpenses.forEach((e) => {
+      const t = e.vatTreatment ?? (e.vatAmount > 0 ? 'standard' : 'exempt');
+      if (t === 'zero') inputZeroRated += e.netAmount;
+      else if (t === 'exempt') inputExempt += e.netAmount;
+      else inputStandardNet += e.netAmount;
+    });
+
     const supplierNet = round2(
       scopedSupplierInvoices.reduce((a, s) => a + s.netAmount, 0)
     );
@@ -120,6 +160,22 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       scopedExpenses
         .filter((e) => e.isVatClaimable)
         .reduce((a, e) => a + e.vatAmount, 0)
+    );
+
+    const supplierWhtTotal = round2(
+      scopedSupplierInvoices.reduce((a, s) => a + (s.whtAmount || 0), 0) +
+        scopedExpenses.reduce((a, e) => a + (e.whtAmount || 0), 0)
+    );
+    const supplierWhtRemitted = round2(
+      scopedSupplierInvoices
+        .filter((s) => s.whtRemitted)
+        .reduce((a, s) => a + (s.whtAmount || 0), 0)
+    );
+    const supplierWhtPending = round2(
+      Math.max(0, supplierWhtTotal - supplierWhtRemitted)
+    );
+    const clientWhtTotal = round2(
+      scopedInvoices.reduce((a, i) => a + (i.whtWithheldAmount || 0), 0)
     );
 
     const totalInputVat = round2(supplierInputVat + expenseInputVat);
@@ -189,9 +245,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       scopedSupplierInvoices,
       scopedExpenses,
       salesNet,
+      outputStandardNet: round2(outputStandardNet),
+      outputZeroRated: round2(outputZeroRated),
+      outputExempt: round2(outputExempt),
       outputVat,
       receivables,
       collectedCash,
+      inputStandardNet: round2(inputStandardNet),
+      inputZeroRated: round2(inputZeroRated),
+      inputExempt: round2(inputExempt),
       supplierNet,
       supplierInputVat,
       payables,
@@ -199,6 +261,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       expenseInputVat,
       totalInputVat,
       netVatPayable,
+      supplierWhtTotal,
+      supplierWhtRemitted,
+      supplierWhtPending,
+      clientWhtTotal,
       totalOutflowNet,
       operatingMargin,
       jobCostRows,
@@ -224,7 +290,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
   const handleExportReportCsv = () => {
     let rows: string[][] = [];
-    let filename = `megaprint-report-${activeTab}-${new Date().toISOString().slice(0, 10)}.csv`;
+    const filename = `megaprint-report-${activeTab}-${new Date().toISOString().slice(0, 10)}.csv`;
 
     if (activeTab === 'financial') {
       rows = [
@@ -264,41 +330,114 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       ];
     } else if (activeTab === 'vat-audit') {
       rows = [
-        ['Direction', 'Document #', 'Counterparty', 'ZIMRA BP #', 'Date', 'Net', 'VAT', 'Gross'],
-        ...reportData.scopedInvoices.map((i) => [
-          'Output VAT',
-          i.invoiceNumber,
-          i.clientName,
-          i.clientVatPin || '',
-          i.issueDate,
-          i.netAmount.toFixed(2),
-          i.vatAmount.toFixed(2),
-          i.grossAmount.toFixed(2),
-        ]),
-        ...reportData.scopedSupplierInvoices
-          .filter((s) => s.isVatClaimable)
-          .map((s) => [
-            'Input VAT (Supplier Invoice)',
+        [
+          'Direction',
+          'Document #',
+          'Counterparty',
+          'ZIMRA TIN',
+          'VAT Reg #',
+          'Tax Class',
+          'Date',
+          'Standard Net',
+          'Zero-Rated (0%)',
+          'Exempt',
+          'Total Net',
+          'VAT',
+          'Gross',
+          'WHT',
+        ],
+        ...reportData.scopedInvoices.map((i) => {
+          const sum = summarizeTaxBreakdown(i.lines || [], {
+            netAmount: i.netAmount,
+            vatAmount: i.vatAmount,
+            grossAmount: i.grossAmount,
+          });
+          const std = i.standardNetAmount ?? sum.standardNetAmount;
+          const zero = i.zeroRatedAmount ?? sum.zeroRatedAmount;
+          const exm = i.exemptAmount ?? sum.exemptAmount;
+          const cls =
+            zero > 0 && std === 0 && exm === 0
+              ? 'Zero-Rated 0%'
+              : exm > 0 && std === 0 && zero === 0
+                ? 'Exempt'
+                : zero > 0 || exm > 0
+                  ? 'Mixed'
+                  : 'Standard VAT';
+          return [
+            'Output VAT',
+            i.invoiceNumber,
+            i.clientName,
+            i.clientTin || i.clientVatPin || '',
+            i.clientVatReg || '',
+            cls,
+            i.issueDate,
+            std.toFixed(2),
+            zero.toFixed(2),
+            exm.toFixed(2),
+            i.netAmount.toFixed(2),
+            i.vatAmount.toFixed(2),
+            i.grossAmount.toFixed(2),
+            (i.whtWithheldAmount || 0).toFixed(2),
+          ];
+        }),
+        ...reportData.scopedSupplierInvoices.map((s) => {
+          const sum = summarizeTaxBreakdown(s.lines || [], {
+            vatTreatment: s.vatTreatment,
+            netAmount: s.netAmount,
+            vatAmount: s.vatAmount,
+            grossAmount: s.grossAmount,
+          });
+          const std = s.standardNetAmount ?? sum.standardNetAmount;
+          const zero = s.zeroRatedAmount ?? sum.zeroRatedAmount;
+          const exm = s.exemptAmount ?? sum.exemptAmount;
+          return [
+            s.isVatClaimable
+              ? 'Input VAT (Supplier Invoice)'
+              : 'Purchase (Non-Claimable / Zero / Exempt)',
             s.supplierInvoiceNo,
             s.supplierName,
-            s.supplierTaxPin || '',
+            s.supplierTin || s.supplierTaxPin || '',
+            s.supplierVatReg || '',
+            s.vatTreatment === 'zero'
+              ? 'Zero-Rated 0%'
+              : s.vatTreatment === 'exempt'
+                ? 'Exempt'
+                : 'Standard VAT',
             s.invoiceDate,
+            std.toFixed(2),
+            zero.toFixed(2),
+            exm.toFixed(2),
             s.netAmount.toFixed(2),
-            s.vatAmount.toFixed(2),
+            (s.isVatClaimable ? s.vatAmount : 0).toFixed(2),
             s.grossAmount.toFixed(2),
-          ]),
-        ...reportData.scopedExpenses
-          .filter((e) => e.isVatClaimable)
-          .map((e) => [
-            'Input VAT (Expense)',
+            (s.whtAmount || 0).toFixed(2),
+          ];
+        }),
+        ...reportData.scopedExpenses.map((e) => {
+          const t = e.vatTreatment ?? (e.vatAmount > 0 ? 'standard' : 'exempt');
+          return [
+            e.isVatClaimable
+              ? 'Input VAT (Expense)'
+              : 'Expense (Non-Claimable / Zero / Exempt)',
             e.vendorInvoiceRef || e.expenseNumber,
             e.vendorName,
-            e.vendorVatPin || '',
+            e.vendorTin || e.vendorVatPin || '',
+            e.vendorVatReg || '',
+            t === 'zero'
+              ? 'Zero-Rated 0%'
+              : t === 'exempt'
+                ? 'Exempt'
+                : 'Standard VAT',
             e.expenseDate,
+            (t === 'standard' ? e.netAmount : 0).toFixed(2),
+            (t === 'zero' ? e.netAmount : 0).toFixed(2),
+            (t === 'exempt' ? e.netAmount : 0).toFixed(2),
             e.netAmount.toFixed(2),
-            e.vatAmount.toFixed(2),
+            (e.isVatClaimable ? e.vatAmount : 0).toFixed(2),
             e.grossAmount.toFixed(2),
-          ]),
+            (e.whtAmount || 0).toFixed(2),
+          ];
+        }),
       ];
     } else {
       rows = [
@@ -341,6 +480,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           <div className="text-right text-xs text-slate-600">
             <div className="font-bold text-slate-900 text-sm">
               Management &amp; Operational Report
+            </div>
+            <div className="font-mono-nums">
+              ZIMRA TIN: {settings.zimraTin || settings.taxPin || '—'} · VAT Reg #:{' '}
+              {settings.vatRegNumber || '—'}
             </div>
             <div>
               Period: {useAllDates ? 'All Recorded Dates' : `${fromDate} to ${toDate}`}
@@ -388,7 +531,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                VAT Audit Schedule
+                VAT &amp; WHT Audit Schedule
               </button>
             )}
             <button
@@ -484,7 +627,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 {formatMoney(reportData.salesNet, settings.currency)}
               </div>
               <div className="mt-1 text-xs text-slate-500 font-mono-nums">
-                Collected {formatMoney(reportData.collectedCash, settings.currency)}
+                Settled {formatMoney(reportData.collectedCash, settings.currency)}
               </div>
             </div>
             <div className="bg-white border border-slate-200 rounded-lg p-5">
@@ -652,27 +795,39 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         </div>
       )}
 
-      {/* Tab 3: VAT Audit Schedule */}
+      {/* Tab 3: VAT & WHT Audit Schedule */}
       {activeTab === 'vat-audit' && canViewFinance && (
         <div className="space-y-5">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             <div className="bg-white border border-slate-200 rounded-lg p-5">
               <div className="text-xs text-slate-500">Output VAT (Sales)</div>
               <div className="mt-2 font-mono-nums text-2xl font-semibold text-slate-900">
                 {formatMoney(reportData.outputVat, settings.currency)}
               </div>
-              <div className="mt-1 text-xs text-slate-500">
-                {reportData.scopedInvoices.length} issued customer tax invoices
+              <div className="mt-2 space-y-0.5 text-[11px] text-slate-500 font-mono-nums">
+                <div>
+                  Std Net {formatMoney(reportData.outputStandardNet, settings.currency)} (
+                  {reportData.scopedInvoices.length} inv)
+                </div>
+                <div>
+                  Zero 0%: {formatMoney(reportData.outputZeroRated, settings.currency)} · Exm:{' '}
+                  {formatMoney(reportData.outputExempt, settings.currency)}
+                </div>
               </div>
             </div>
             <div className="bg-white border border-slate-200 rounded-lg p-5">
-              <div className="text-xs text-slate-500">Input VAT (Supplier Tax Invoices + Bills)</div>
+              <div className="text-xs text-slate-500">Input VAT (Supplier Inv + Bills)</div>
               <div className="mt-2 font-mono-nums text-2xl font-semibold text-emerald-700">
                 {formatMoney(reportData.totalInputVat, settings.currency)}
               </div>
-              <div className="mt-1 text-xs text-slate-500 font-mono-nums">
-                Supplier Inv {formatMoney(reportData.supplierInputVat, settings.currency)} ·
-                Expenses {formatMoney(reportData.expenseInputVat, settings.currency)}
+              <div className="mt-2 space-y-0.5 text-[11px] text-slate-500 font-mono-nums">
+                <div>
+                  Std Net {formatMoney(reportData.inputStandardNet, settings.currency)}
+                </div>
+                <div>
+                  Zero 0%: {formatMoney(reportData.inputZeroRated, settings.currency)} · Exm:{' '}
+                  {formatMoney(reportData.inputExempt, settings.currency)}
+                </div>
               </div>
             </div>
             <div className="bg-white border border-slate-200 rounded-lg p-5">
@@ -680,15 +835,31 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               <div className="mt-2 font-mono-nums text-2xl font-semibold text-slate-900">
                 {formatMoney(reportData.netVatPayable, settings.currency)}
               </div>
-              <div className="mt-1 text-xs text-slate-500">
-                Company ZIMRA BP #: {settings.taxPin || '—'}
+              <div className="mt-2 text-[11px] text-slate-500 font-mono-nums">
+                TIN: {settings.zimraTin || settings.taxPin || '—'} · VAT #:{' '}
+                {settings.vatRegNumber || '—'}
+              </div>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-lg p-5">
+              <div className="text-xs text-slate-500">Withholding Tax (WHT) Audit</div>
+              <div className="mt-2 font-mono-nums text-2xl font-semibold text-amber-700">
+                {formatMoney(reportData.supplierWhtPending, settings.currency)}
+              </div>
+              <div className="mt-2 space-y-0.5 text-[11px] text-slate-500 font-mono-nums">
+                <div>
+                  Supplier WHT: {formatMoney(reportData.supplierWhtTotal, settings.currency)} (
+                  {formatMoney(reportData.supplierWhtRemitted, settings.currency)} remitted)
+                </div>
+                <div>
+                  Client WHT Credits: {formatMoney(reportData.clientWhtTotal, settings.currency)}
+                </div>
               </div>
             </div>
           </div>
 
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <div className="px-5 py-3.5 border-b border-slate-200 font-display text-sm font-semibold text-slate-900">
-              Supplier Tax Invoices Input VAT Audit
+              Supplier Tax Invoices VAT &amp; WHT Compliance Audit
             </div>
             {reportData.scopedSupplierInvoices.length === 0 ? (
               <div className="p-8 text-center text-sm text-slate-500">
@@ -701,16 +872,20 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                     <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
                       <th className="py-2.5 px-4">Voucher / Tax Inv #</th>
                       <th className="py-2.5 px-4">Supplier</th>
-                      <th className="py-2.5 px-4">ZIMRA BP #</th>
+                      <th className="py-2.5 px-4">ZIMRA TIN / VAT Reg #</th>
+                      <th className="py-2.5 px-4">Tax Class</th>
                       <th className="py-2.5 px-4">Date</th>
                       <th className="py-2.5 px-4 text-right">Net</th>
                       <th className="py-2.5 px-4 text-right">Input VAT</th>
+                      <th className="py-2.5 px-4 text-right">WHT</th>
                       <th className="py-2.5 px-4">Compliance</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {reportData.scopedSupplierInvoices.map((si) => {
-                      const missingPin = si.vatAmount > 0 && !si.supplierTaxPin.trim();
+                      const tinVal = (si.supplierTin || si.supplierTaxPin || '').trim();
+                      const vatVal = (si.supplierVatReg || '').trim();
+                      const missingTax = si.vatAmount > 0 && !tinVal && !vatVal;
                       return (
                         <tr key={si.id}>
                           <td className="py-2.5 px-4 font-mono-nums">
@@ -721,7 +896,19 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                           </td>
                           <td className="py-2.5 px-4 text-slate-800">{si.supplierName}</td>
                           <td className="py-2.5 px-4 font-mono-nums text-slate-600">
-                            {si.supplierTaxPin || '—'}
+                            <div>{tinVal ? `TIN: ${tinVal}` : '—'}</div>
+                            {vatVal && (
+                              <div className="text-[11px] text-slate-400">
+                                VAT: {vatVal}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-600 whitespace-nowrap">
+                            {si.vatTreatment === 'zero'
+                              ? 'Zero 0%'
+                              : si.vatTreatment === 'exempt'
+                                ? 'Exempt'
+                                : `VAT ${si.vatRate}%`}
                           </td>
                           <td className="py-2.5 px-4 font-mono-nums text-slate-600">
                             {si.invoiceDate}
@@ -734,12 +921,19 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                               ? formatMoney(si.vatAmount, settings.currency)
                               : 'Non-claimable'}
                           </td>
+                          <td className="py-2.5 px-4 text-right font-mono-nums text-amber-700">
+                            {(si.whtAmount || 0) > 0
+                              ? `${formatMoney(si.whtAmount || 0, settings.currency)}${
+                                  si.whtRemitted ? ' (Paid)' : ''
+                                }`
+                              : '—'}
+                          </td>
                           <td className="py-2.5 px-4">
                             <StatusText
                               status={
-                                missingPin
+                                missingTax
                                   ? 'Overdue'
-                                  : si.isVatClaimable
+                                  : si.isVatClaimable || si.vatAmount === 0
                                     ? 'Approved'
                                     : 'Pending'
                               }

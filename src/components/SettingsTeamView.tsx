@@ -133,6 +133,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
   const [companyName, setCompanyName] = useState(settings.companyName);
   const [tagline, setTagline] = useState(settings.tagline);
   const [taxPin, setTaxPin] = useState(settings.taxPin);
+  const [zimraTin, setZimraTin] = useState(settings.zimraTin || '');
+  const [vatRegNumber, setVatRegNumber] = useState(settings.vatRegNumber || '');
   const [address, setAddress] = useState(settings.address);
   const [phone, setPhone] = useState(settings.phone);
   const [email, setEmail] = useState(settings.email);
@@ -203,6 +205,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
     setCompanyName(settings.companyName);
     setTagline(settings.tagline);
     setTaxPin(settings.taxPin);
+    setZimraTin(settings.zimraTin || '');
+    setVatRegNumber(settings.vatRegNumber || '');
     setAddress(settings.address);
     setPhone(settings.phone);
     setEmail(settings.email);
@@ -276,6 +280,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
         companyName,
         tagline,
         taxPin,
+        zimraTin,
+        vatRegNumber,
         address,
         phone,
         email,
@@ -611,7 +617,31 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
-                ZIMRA BP / VAT Reg #
+                ZIMRA TIN (Taxpayer Identification #)
+              </label>
+              <input
+                type="text"
+                value={zimraTin}
+                onChange={(e) => setZimraTin(e.target.value)}
+                placeholder="e.g. 2000148291"
+                className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                ZIMRA VAT Reg Number
+              </label>
+              <input
+                type="text"
+                value={vatRegNumber}
+                onChange={(e) => setVatRegNumber(e.target.value)}
+                placeholder="e.g. 10048291"
+                className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                ZIMRA BP Number (Legacy / FDMS)
               </label>
               <input
                 type="text"
