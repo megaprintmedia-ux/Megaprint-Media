@@ -1,0 +1,1317 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Helpers
+    // -------------------------------------------------------------------------
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedSignedIn() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isNonEmptyStr(val, maxLen) {
+      return val is string && val.size() >= 1 && val.size() <= maxLen;
+    }
+
+    function isOptionalStr(val, maxLen) {
+      return val is string && val.size() <= maxLen;
+    }
+
+    function isNonNegativeNum(val) {
+      return val is number && val >= 0;
+    }
+
+    function isBoundedUidList(arr) {
+      return arr is list && arr.size() >= 1 && arr.size() <= 10 && arr[0] is string && arr[0].size() >= 1 && arr[0].size() <= 128;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedSignedIn() && request.auth.token.email == 'megaprintmedia@gmail.com';
+    }
+
+    function userDocExists() {
+      return isVerifiedSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveStaff() {
+      return isBootstrappedAdmin() || (
+        userDocExists() &&
+        userDoc().status == 'active' &&
+        userDoc().role in ['management', 'sales', 'accounts', 'production']
+      );
+    }
+
+    function isManagement() {
+      return isBootstrappedAdmin() || (
+        userDocExists() &&
+        userDoc().status == 'active' &&
+        userDoc().role == 'management'
+      );
+    }
+
+    function isAccountsOrManagement() {
+      return isManagement() || (
+        userDocExists() &&
+        userDoc().status == 'active' &&
+        userDoc().role == 'accounts'
+      );
+    }
+
+    function isSalesOrManagement() {
+      return isManagement() || (
+        userDocExists() &&
+        userDoc().status == 'active' &&
+        userDoc().role == 'sales'
+      );
+    }
+
+    function isProductionOrManagement() {
+      return isManagement() || (
+        userDocExists() &&
+        userDoc().status == 'active' &&
+        userDoc().role == 'production'
+      );
+    }
+
+    // -------------------------------------------------------------------------
+    // Entity Validators (No existing() or diff() inside validators)
+    // -------------------------------------------------------------------------
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'department', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'department', 'status', 'commissionRatePct', 'inviteId', 'adminUids', 'createdAt', 'updatedAt']) &&
+        data.uid == userId &&
+        isValidId(data.uid) &&
+        isNonEmptyStr(data.email, 200) &&
+        isNonEmptyStr(data.displayName, 120) &&
+        data.role in ['management', 'sales', 'accounts', 'production'] &&
+        data.department in ['Management', 'Sales & Marketing', 'Accounts', 'Production'] &&
+        data.status in ['active', 'pending', 'disabled'] &&
+        (!('commissionRatePct' in data) || (data.commissionRatePct is number && data.commissionRatePct >= 0 && data.commissionRatePct <= 50)) &&
+        (!('inviteId' in data) || isOptionalStr(data.inviteId, 128)) &&
+        (!('adminUids' in data) || isBoundedUidList(data.adminUids)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCompanySettings(data) {
+      return data.keys().hasAll(['companyName', 'currency', 'defaultVatRate', 'ownerUid', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'companyName', 'tagline', 'taxPin', 'address', 'phone', 'email',
+          'currency', 'defaultVatRate', 'defaultCommissionRatePct',
+          'defaultCommissionBasis', 'logoDataUrl', 'ownerUid', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.companyName, 120) &&
+        (!('tagline' in data) || isOptionalStr(data.tagline, 200)) &&
+        (!('taxPin' in data) || isOptionalStr(data.taxPin, 64)) &&
+        (!('address' in data) || isOptionalStr(data.address, 300)) &&
+        (!('phone' in data) || isOptionalStr(data.phone, 40)) &&
+        (!('email' in data) || isOptionalStr(data.email, 200)) &&
+        isNonEmptyStr(data.currency, 6) &&
+        data.defaultVatRate is number && data.defaultVatRate >= 0 && data.defaultVatRate <= 50 &&
+        (!('defaultCommissionRatePct' in data) || (data.defaultCommissionRatePct is number && data.defaultCommissionRatePct >= 0 && data.defaultCommissionRatePct <= 50)) &&
+        (!('defaultCommissionBasis' in data) || data.defaultCommissionBasis in ['net_sales', 'gross_profit']) &&
+        (!('logoDataUrl' in data) || isOptionalStr(data.logoDataUrl, 200000)) &&
+        isValidId(data.ownerUid) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidClient(data) {
+      return data.keys().hasAll(['companyName', 'contactName', 'paymentTermsDays', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['companyName', 'contactName', 'email', 'phone', 'taxPin', 'address', 'paymentTermsDays', 'notes', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt']) &&
+        isNonEmptyStr(data.companyName, 160) &&
+        isNonEmptyStr(data.contactName, 120) &&
+        (!('email' in data) || isOptionalStr(data.email, 200)) &&
+        (!('phone' in data) || isOptionalStr(data.phone, 40)) &&
+        (!('taxPin' in data) || isOptionalStr(data.taxPin, 64)) &&
+        (!('address' in data) || isOptionalStr(data.address, 300)) &&
+        data.paymentTermsDays is number && data.paymentTermsDays >= 0 && data.paymentTermsDays <= 365 &&
+        (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidJob(data) {
+      return data.keys().hasAll([
+          'jobNumber', 'clientId', 'clientName', 'title', 'category', 'status', 'priority',
+          'quantity', 'pricingMode', 'vatTreatment', 'vatRate', 'netTotal', 'vatAmount',
+          'grossTotal', 'actualCostTotal', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'jobNumber', 'clientId', 'clientName', 'title', 'category', 'status', 'priority',
+          'dueDate', 'printMethod', 'substrateOrFabric', 'colorSpecs', 'quantity',
+          'sizeBreakdown', 'artworkNotes', 'tailoringMeasurements', 'checklist',
+          'pricingMode', 'vatTreatment', 'vatRate', 'unitPrice', 'netTotal', 'vatAmount',
+          'grossTotal', 'estimatedMaterialCost', 'estimatedLaborCost',
+          'estimatedSubcontractCost', 'estimatedOverheadCost', 'actualCostTotal',
+          'assignedSalesUid', 'assignedSalesName', 'assignedProductionName',
+          'commissionRatePct', 'commissionBasis', 'commissionAmount',
+          'commissionStatus', 'commissionPaidDate',
+          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.jobNumber, 40) &&
+        isValidId(data.clientId) &&
+        isNonEmptyStr(data.clientName, 160) &&
+        isNonEmptyStr(data.title, 200) &&
+        data.category in ['Printing', 'Branding', 'Corporate Wear', 'Tailoring'] &&
+        data.status in ['Quoted', 'Approved', 'In Production', 'Quality Control', 'Ready for Dispatch', 'Delivered', 'Completed', 'Cancelled'] &&
+        data.priority in ['Standard', 'Urgent', 'Express'] &&
+        (!('dueDate' in data) || isOptionalStr(data.dueDate, 32)) &&
+        (!('printMethod' in data) || isOptionalStr(data.printMethod, 120)) &&
+        (!('substrateOrFabric' in data) || isOptionalStr(data.substrateOrFabric, 160)) &&
+        (!('colorSpecs' in data) || isOptionalStr(data.colorSpecs, 160)) &&
+        data.quantity is number && data.quantity >= 1 &&
+        (!('sizeBreakdown' in data) || data.sizeBreakdown is map) &&
+        (!('artworkNotes' in data) || isOptionalStr(data.artworkNotes, 2000)) &&
+        (!('tailoringMeasurements' in data) || isOptionalStr(data.tailoringMeasurements, 2000)) &&
+        (!('checklist' in data) || data.checklist is map) &&
+        data.pricingMode in ['exclusive', 'inclusive'] &&
+        data.vatTreatment in ['standard', 'zero', 'exempt'] &&
+        data.vatRate is number && data.vatRate >= 0 && data.vatRate <= 50 &&
+        (!('unitPrice' in data) || isNonNegativeNum(data.unitPrice)) &&
+        isNonNegativeNum(data.netTotal) &&
+        isNonNegativeNum(data.vatAmount) &&
+        isNonNegativeNum(data.grossTotal) &&
+        (!('estimatedMaterialCost' in data) || isNonNegativeNum(data.estimatedMaterialCost)) &&
+        (!('estimatedLaborCost' in data) || isNonNegativeNum(data.estimatedLaborCost)) &&
+        (!('estimatedSubcontractCost' in data) || isNonNegativeNum(data.estimatedSubcontractCost)) &&
+        (!('estimatedOverheadCost' in data) || isNonNegativeNum(data.estimatedOverheadCost)) &&
+        isNonNegativeNum(data.actualCostTotal) &&
+        (!('assignedSalesUid' in data) || isOptionalStr(data.assignedSalesUid, 128)) &&
+        (!('assignedSalesName' in data) || isOptionalStr(data.assignedSalesName, 120)) &&
+        (!('assignedProductionName' in data) || isOptionalStr(data.assignedProductionName, 120)) &&
+        (!('commissionRatePct' in data) || (data.commissionRatePct is number && data.commissionRatePct >= 0 && data.commissionRatePct <= 50)) &&
+        (!('commissionBasis' in data) || data.commissionBasis in ['net_sales', 'gross_profit']) &&
+        (!('commissionAmount' in data) || isNonNegativeNum(data.commissionAmount)) &&
+        (!('commissionStatus' in data) || data.commissionStatus in ['Pending', 'Earned', 'Approved', 'Paid']) &&
+        (!('commissionPaidDate' in data) || isOptionalStr(data.commissionPaidDate, 32)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidJobCost(data, jobId) {
+      return data.keys().hasAll(['jobId', 'costType', 'description', 'quantity', 'unitCost', 'totalCost', 'loggedByName', 'ownerUid', 'staffUids', 'createdAt']) &&
+        data.keys().hasOnly(['jobId', 'costType', 'description', 'quantity', 'unitCost', 'totalCost', 'loggedByName', 'ownerUid', 'staffUids', 'createdAt']) &&
+        data.jobId == jobId &&
+        isValidId(data.jobId) &&
+        data.costType in ['Material', 'Labor', 'Subcontract', 'Overhead'] &&
+        isNonEmptyStr(data.description, 240) &&
+        data.quantity is number && data.quantity > 0 &&
+        isNonNegativeNum(data.unitCost) &&
+        isNonNegativeNum(data.totalCost) &&
+        isNonEmptyStr(data.loggedByName, 120) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidInvoice(data) {
+      return data.keys().hasAll([
+          'invoiceNumber', 'clientId', 'clientName', 'issueDate', 'dueDate', 'status',
+          'pricingMode', 'vatRate', 'lines', 'netAmount', 'vatAmount', 'grossAmount',
+          'amountPaid', 'balanceDue', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'invoiceNumber', 'jobId', 'jobNumber', 'clientId', 'clientName', 'clientVatPin',
+          'issueDate', 'dueDate', 'status', 'pricingMode', 'vatRate', 'lines',
+          'netAmount', 'vatAmount', 'grossAmount', 'amountPaid', 'balanceDue',
+          'paymentMethod', 'paymentReference', 'notes', 'ownerUid', 'staffUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.invoiceNumber, 40) &&
+        (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
+        (!('jobNumber' in data) || isOptionalStr(data.jobNumber, 40)) &&
+        isValidId(data.clientId) &&
+        isNonEmptyStr(data.clientName, 160) &&
+        (!('clientVatPin' in data) || isOptionalStr(data.clientVatPin, 64)) &&
+        isNonEmptyStr(data.issueDate, 32) &&
+        isNonEmptyStr(data.dueDate, 32) &&
+        data.status in ['Draft', 'Issued', 'Part Paid', 'Paid', 'Overdue', 'Void'] &&
+        data.pricingMode in ['exclusive', 'inclusive'] &&
+        data.vatRate is number && data.vatRate >= 0 && data.vatRate <= 50 &&
+        data.lines is list && data.lines.size() >= 1 && data.lines.size() <= 10 && data.lines[0] is map &&
+        isNonNegativeNum(data.netAmount) &&
+        isNonNegativeNum(data.vatAmount) &&
+        isNonNegativeNum(data.grossAmount) &&
+        isNonNegativeNum(data.amountPaid) &&
+        isNonNegativeNum(data.balanceDue) &&
+        (!('paymentMethod' in data) || isOptionalStr(data.paymentMethod, 60)) &&
+        (!('paymentReference' in data) || isOptionalStr(data.paymentReference, 120)) &&
+        (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll([
+          'expenseNumber', 'vendorName', 'category', 'expenseDate', 'isVatClaimable',
+          'vatRate', 'netAmount', 'vatAmount', 'grossAmount', 'paymentStatus',
+          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'expenseNumber', 'vendorName', 'vendorVatPin', 'vendorInvoiceRef', 'category',
+          'jobId', 'expenseDate', 'isVatClaimable', 'vatRate', 'netAmount', 'vatAmount',
+          'grossAmount', 'paymentStatus', 'notes', 'ownerUid', 'staffUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.expenseNumber, 40) &&
+        isNonEmptyStr(data.vendorName, 160) &&
+        (!('vendorVatPin' in data) || isOptionalStr(data.vendorVatPin, 64)) &&
+        (!('vendorInvoiceRef' in data) || isOptionalStr(data.vendorInvoiceRef, 80)) &&
+        data.category in [
+          'Materials & Substrates', 'Tailoring & Trims', 'Payroll & Wages',
+          'Utilities & Rent', 'Equipment & Maintenance', 'Logistics & Delivery',
+          'Marketing & Admin'
+        ] &&
+        (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
+        isNonEmptyStr(data.expenseDate, 32) &&
+        data.isVatClaimable is bool &&
+        data.vatRate is number && data.vatRate >= 0 && data.vatRate <= 50 &&
+        isNonNegativeNum(data.netAmount) &&
+        isNonNegativeNum(data.vatAmount) &&
+        isNonNegativeNum(data.grossAmount) &&
+        data.paymentStatus in ['Paid', 'Payable'] &&
+        (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidEmployee(data) {
+      return data.keys().hasAll([
+          'employeeCode', 'fullName', 'department', 'jobTitle', 'employmentType',
+          'hourlyRate', 'monthlySalary', 'taxDeductionRate', 'annualLeaveBalance',
+          'sickLeaveBalance', 'status', 'ownerUid', 'hrViewerUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'employeeCode', 'fullName', 'email', 'phone', 'department', 'jobTitle',
+          'employmentType', 'hourlyRate', 'monthlySalary', 'taxDeductionRate',
+          'annualLeaveBalance', 'sickLeaveBalance', 'status', 'userUid',
+          'ownerUid', 'hrViewerUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.employeeCode, 32) &&
+        isNonEmptyStr(data.fullName, 120) &&
+        (!('email' in data) || isOptionalStr(data.email, 200)) &&
+        (!('phone' in data) || isOptionalStr(data.phone, 40)) &&
+        data.department in ['Management', 'Sales & Marketing', 'Accounts', 'Production'] &&
+        isNonEmptyStr(data.jobTitle, 120) &&
+        data.employmentType in ['Full-Time', 'Contract', 'Casual'] &&
+        isNonNegativeNum(data.hourlyRate) &&
+        isNonNegativeNum(data.monthlySalary) &&
+        data.taxDeductionRate is number && data.taxDeductionRate >= 0 && data.taxDeductionRate <= 60 &&
+        isNonNegativeNum(data.annualLeaveBalance) &&
+        isNonNegativeNum(data.sickLeaveBalance) &&
+        data.status in ['Active', 'On Leave', 'Inactive'] &&
+        (!('userUid' in data) || isOptionalStr(data.userUid, 128)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.hrViewerUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTimeEntry(data) {
+      return data.keys().hasAll([
+          'employeeId', 'employeeName', 'department', 'date', 'clockInIso',
+          'breakMinutes', 'regularHours', 'overtimeHours', 'totalHours',
+          'hourlyRate', 'laborCost', 'status', 'ownerUid', 'staffUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'employeeId', 'employeeName', 'department', 'jobId', 'jobNumber',
+          'date', 'clockInIso', 'clockOutIso', 'breakMinutes', 'regularHours',
+          'overtimeHours', 'totalHours', 'hourlyRate', 'laborCost', 'status',
+          'notes', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.employeeId) &&
+        isNonEmptyStr(data.employeeName, 120) &&
+        data.department in ['Management', 'Sales & Marketing', 'Accounts', 'Production'] &&
+        (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
+        (!('jobNumber' in data) || isOptionalStr(data.jobNumber, 40)) &&
+        isNonEmptyStr(data.date, 32) &&
+        isNonEmptyStr(data.clockInIso, 64) &&
+        (!('clockOutIso' in data) || isOptionalStr(data.clockOutIso, 64)) &&
+        isNonNegativeNum(data.breakMinutes) &&
+        isNonNegativeNum(data.regularHours) &&
+        isNonNegativeNum(data.overtimeHours) &&
+        isNonNegativeNum(data.totalHours) &&
+        isNonNegativeNum(data.hourlyRate) &&
+        isNonNegativeNum(data.laborCost) &&
+        data.status in ['Clocked In', 'Completed', 'Approved'] &&
+        (!('notes' in data) || isOptionalStr(data.notes, 500)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidLeaveRequest(data) {
+      return data.keys().hasAll([
+          'employeeId', 'employeeName', 'department', 'leaveType', 'startDate',
+          'endDate', 'daysCount', 'reason', 'status', 'ownerUid', 'staffUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'employeeId', 'employeeName', 'department', 'leaveType', 'startDate',
+          'endDate', 'daysCount', 'reason', 'status', 'reviewedByName',
+          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.employeeId) &&
+        isNonEmptyStr(data.employeeName, 120) &&
+        data.department in ['Management', 'Sales & Marketing', 'Accounts', 'Production'] &&
+        data.leaveType in ['Annual', 'Sick', 'Compassionate', 'Unpaid'] &&
+        isNonEmptyStr(data.startDate, 32) &&
+        isNonEmptyStr(data.endDate, 32) &&
+        data.daysCount is number && data.daysCount > 0 && data.daysCount <= 365 &&
+        isNonEmptyStr(data.reason, 500) &&
+        data.status in ['Pending', 'Approved', 'Declined'] &&
+        (!('reviewedByName' in data) || isOptionalStr(data.reviewedByName, 120)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPayrollRun(data) {
+      return data.keys().hasAll([
+          'periodLabel', 'payDate', 'employeeCount', 'totalGrossPay',
+          'totalDeductions', 'totalNetPay', 'status', 'ownerUid',
+          'hrViewerUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'periodLabel', 'payDate', 'employeeCount', 'totalGrossPay',
+          'totalDeductions', 'totalNetPay', 'status', 'notes', 'ownerUid',
+          'hrViewerUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.periodLabel, 80) &&
+        isNonEmptyStr(data.payDate, 32) &&
+        isNonNegativeNum(data.employeeCount) &&
+        isNonNegativeNum(data.totalGrossPay) &&
+        isNonNegativeNum(data.totalDeductions) &&
+        isNonNegativeNum(data.totalNetPay) &&
+        data.status in ['Draft', 'Approved', 'Paid'] &&
+        (!('notes' in data) || isOptionalStr(data.notes, 500)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.hrViewerUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidNote(data) {
+      return data.keys().hasAll([
+          'title', 'body', 'audience', 'tone', 'pinned', 'authorName',
+          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'title', 'body', 'audience', 'tone', 'pinned', 'authorName',
+          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.title, 120) &&
+        isNonEmptyStr(data.body, 600) &&
+        data.audience in ['All Staff', 'Production', 'Sales & Marketing', 'Accounts'] &&
+        data.tone in ['amber', 'sky', 'emerald', 'slate'] &&
+        data.pinned is bool &&
+        isNonEmptyStr(data.authorName, 120) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSupplierInvoice(data) {
+      return data.keys().hasAll([
+          'recordNumber', 'supplierName', 'supplierInvoiceNo', 'category',
+          'invoiceDate', 'dueDate', 'pricingMode', 'vatTreatment',
+          'isVatClaimable', 'vatRate', 'lines', 'netAmount', 'vatAmount',
+          'grossAmount', 'amountPaid', 'balanceDue', 'status',
+          'ownerUid', 'viewerUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'recordNumber', 'supplierName', 'supplierTaxPin', 'supplierInvoiceNo',
+          'category', 'jobId', 'jobNumber', 'invoiceDate', 'dueDate',
+          'pricingMode', 'vatTreatment', 'isVatClaimable', 'vatRate', 'lines',
+          'netAmount', 'vatAmount', 'grossAmount', 'amountPaid', 'balanceDue',
+          'status', 'paymentMethod', 'paymentReference', 'notes',
+          'ownerUid', 'viewerUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.recordNumber, 40) &&
+        isNonEmptyStr(data.supplierName, 160) &&
+        (!('supplierTaxPin' in data) || isOptionalStr(data.supplierTaxPin, 64)) &&
+        isNonEmptyStr(data.supplierInvoiceNo, 80) &&
+        data.category in [
+          'Materials & Substrates', 'Tailoring & Trims',
+          'Subcontracting & Finishing', 'Equipment & Maintenance',
+          'Logistics & Delivery', 'Utilities & Rent', 'Marketing & Admin'
+        ] &&
+        (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
+        (!('jobNumber' in data) || isOptionalStr(data.jobNumber, 40)) &&
+        isNonEmptyStr(data.invoiceDate, 32) &&
+        isNonEmptyStr(data.dueDate, 32) &&
+        data.pricingMode in ['exclusive', 'inclusive'] &&
+        data.vatTreatment in ['standard', 'zero', 'exempt'] &&
+        data.isVatClaimable is bool &&
+        data.vatRate is number && data.vatRate >= 0 && data.vatRate <= 50 &&
+        data.lines is list && data.lines.size() >= 1 && data.lines.size() <= 10 && data.lines[0] is map &&
+        isNonNegativeNum(data.netAmount) &&
+        isNonNegativeNum(data.vatAmount) &&
+        isNonNegativeNum(data.grossAmount) &&
+        isNonNegativeNum(data.amountPaid) &&
+        isNonNegativeNum(data.balanceDue) &&
+        data.status in ['Unpaid', 'Part Paid', 'Paid', 'Disputed'] &&
+        (!('paymentMethod' in data) || isOptionalStr(data.paymentMethod, 60)) &&
+        (!('paymentReference' in data) || isOptionalStr(data.paymentReference, 120)) &&
+        (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.viewerUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidInventoryItem(data) {
+      return data.keys().hasAll([
+          'sku', 'name', 'itemType', 'unit', 'quantityOnHand', 'reorderLevel',
+          'unitCost', 'status', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'sku', 'name', 'itemType', 'unit', 'quantityOnHand', 'reorderLevel',
+          'unitCost', 'location', 'supplierName', 'sampleClientOrSpec', 'status',
+          'notes', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.sku, 40) &&
+        isNonEmptyStr(data.name, 160) &&
+        data.itemType in ['Consumable', 'Substrate & Fabric', 'Sample', 'Packaging & Trims', 'Finished Stock'] &&
+        isNonEmptyStr(data.unit, 32) &&
+        isNonNegativeNum(data.quantityOnHand) &&
+        isNonNegativeNum(data.reorderLevel) &&
+        isNonNegativeNum(data.unitCost) &&
+        (!('location' in data) || isOptionalStr(data.location, 120)) &&
+        (!('supplierName' in data) || isOptionalStr(data.supplierName, 160)) &&
+        (!('sampleClientOrSpec' in data) || isOptionalStr(data.sampleClientOrSpec, 240)) &&
+        data.status in ['In Stock', 'Low Stock', 'Out of Stock'] &&
+        (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidInventoryMovement(data, itemId) {
+      return data.keys().hasAll([
+          'itemId', 'movementType', 'quantityDelta', 'resultingQty',
+          'recipientOrReason', 'loggedByName', 'ownerUid', 'staffUids', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'itemId', 'movementType', 'quantityDelta', 'resultingQty', 'jobId',
+          'jobNumber', 'recipientOrReason', 'loggedByName', 'ownerUid',
+          'staffUids', 'createdAt'
+        ]) &&
+        data.itemId == itemId &&
+        isValidId(data.itemId) &&
+        data.movementType in ['Stock In', 'Issue to Job', 'Sample Out', 'Sample Return', 'Adjustment'] &&
+        data.quantityDelta is number && data.quantityDelta != 0 &&
+        isNonNegativeNum(data.resultingQty) &&
+        (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
+        (!('jobNumber' in data) || isOptionalStr(data.jobNumber, 40)) &&
+        isNonEmptyStr(data.recipientOrReason, 240) &&
+        isNonEmptyStr(data.loggedByName, 120) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidGoodsReceipt(data) {
+      return data.keys().hasAll([
+          'grnNumber', 'supplierName', 'receivedDate', 'receivedByName',
+          'conditionStatus', 'items', 'totalValue', 'postToInventory',
+          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'grnNumber', 'supplierName', 'deliveryNoteRef', 'supplierInvoiceId',
+          'supplierInvoiceNo', 'jobId', 'jobNumber', 'receivedDate',
+          'receivedByName', 'conditionStatus', 'items', 'totalValue',
+          'postToInventory', 'notes', 'ownerUid', 'staffUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.grnNumber, 40) &&
+        isNonEmptyStr(data.supplierName, 160) &&
+        (!('deliveryNoteRef' in data) || isOptionalStr(data.deliveryNoteRef, 80)) &&
+        (!('supplierInvoiceId' in data) || isOptionalStr(data.supplierInvoiceId, 128)) &&
+        (!('supplierInvoiceNo' in data) || isOptionalStr(data.supplierInvoiceNo, 80)) &&
+        (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
+        (!('jobNumber' in data) || isOptionalStr(data.jobNumber, 40)) &&
+        isNonEmptyStr(data.receivedDate, 32) &&
+        isNonEmptyStr(data.receivedByName, 120) &&
+        data.conditionStatus in ['Accepted', 'Partial / Short', 'Damaged / Rejected'] &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 10 && data.items[0] is map &&
+        isNonNegativeNum(data.totalValue) &&
+        data.postToInventory is bool &&
+        (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCashBookEntry(data) {
+      return data.keys().hasAll([
+          'entryNumber', 'entryDate', 'entryType', 'account', 'counterparty',
+          'category', 'amount', 'reconciled', 'recordedByName',
+          'ownerUid', 'viewerUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'entryNumber', 'entryDate', 'entryType', 'account', 'counterparty',
+          'category', 'reference', 'linkedDocRef', 'amount', 'reconciled',
+          'recordedByName', 'notes', 'ownerUid', 'viewerUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.entryNumber, 40) &&
+        isNonEmptyStr(data.entryDate, 32) &&
+        data.entryType in ['Receipt (Inflow)', 'Payment (Outflow)', 'Contra / Transfer'] &&
+        isNonEmptyStr(data.account, 120) &&
+        isNonEmptyStr(data.counterparty, 160) &&
+        data.category in [
+          'Customer Receipt', 'Supplier Payment', 'Wages & Casuals',
+          'Sales Commission', 'Transport & Fuel', 'Workshop Petty Cash',
+          'Bank Deposit / Transfer', 'Other Operating'
+        ] &&
+        (!('reference' in data) || isOptionalStr(data.reference, 120)) &&
+        (!('linkedDocRef' in data) || isOptionalStr(data.linkedDocRef, 80)) &&
+        data.amount is number && data.amount > 0 &&
+        data.reconciled is bool &&
+        isNonEmptyStr(data.recordedByName, 120) &&
+        (!('notes' in data) || isOptionalStr(data.notes, 500)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.viewerUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidChartAccount(data) {
+      return data.keys().hasAll([
+          'code', 'name', 'accountType', 'subType', 'currency',
+          'openingBalance', 'isCashBookAccount', 'isActive',
+          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'code', 'name', 'accountType', 'subType', 'currency',
+          'bankName', 'accountNumber', 'branch', 'openingBalance',
+          'isCashBookAccount', 'isActive', 'notes',
+          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.code, 24) &&
+        isNonEmptyStr(data.name, 120) &&
+        data.accountType in ['Asset', 'Liability', 'Equity', 'Revenue', 'Expense'] &&
+        data.subType in [
+          'Bank', 'Mobile Money', 'Cash', 'Receivable', 'Payable',
+          'Tax / VAT', 'Operating', 'COGS', 'Payroll'
+        ] &&
+        isNonEmptyStr(data.currency, 6) &&
+        (!('bankName' in data) || isOptionalStr(data.bankName, 120)) &&
+        (!('accountNumber' in data) || isOptionalStr(data.accountNumber, 64)) &&
+        (!('branch' in data) || isOptionalStr(data.branch, 120)) &&
+        data.openingBalance is number &&
+        data.isCashBookAccount is bool &&
+        data.isActive is bool &&
+        (!('notes' in data) || isOptionalStr(data.notes, 500)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserInvite(data) {
+      return data.keys().hasAll([
+          'email', 'displayName', 'role', 'department', 'commissionRatePct',
+          'status', 'invitedByName', 'ownerUid', 'adminUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'email', 'displayName', 'role', 'department', 'commissionRatePct',
+          'status', 'invitedByName', 'acceptedUid', 'ownerUid', 'adminUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.email, 200) &&
+        isNonEmptyStr(data.displayName, 120) &&
+        data.role in ['management', 'sales', 'accounts', 'production'] &&
+        data.department in ['Management', 'Sales & Marketing', 'Accounts', 'Production'] &&
+        data.commissionRatePct is number && data.commissionRatePct >= 0 && data.commissionRatePct <= 50 &&
+        data.status in ['invited', 'accepted', 'revoked'] &&
+        isNonEmptyStr(data.invitedByName, 120) &&
+        (!('acceptedUid' in data) || isOptionalStr(data.acceptedUid, 128)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.adminUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection Rules
+    // -------------------------------------------------------------------------
+
+    // 1. Users (PII & Role Assignment)
+    match /users/{userId} {
+      allow get: if isVerifiedSignedIn() && isValidId(userId) && (request.auth.uid == userId || isManagement());
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.uid == request.auth.uid ||
+        ('adminUids' in resource.data && resource.data.adminUids is list && resource.data.adminUids.size() <= 10 && request.auth.uid in resource.data.adminUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          (isBootstrappedAdmin() && request.auth.uid == userId) ||
+          (
+            request.auth.uid == userId &&
+            'inviteId' in incoming() &&
+            isValidId(incoming().inviteId) &&
+            exists(/databases/$(database)/documents/userInvites/$(incoming().inviteId)) &&
+            get(/databases/$(database)/documents/userInvites/$(incoming().inviteId)).data.status == 'invited' &&
+            get(/databases/$(database)/documents/userInvites/$(incoming().inviteId)).data.email == request.auth.token.email.lower() &&
+            incoming().role == get(/databases/$(database)/documents/userInvites/$(incoming().inviteId)).data.role &&
+            incoming().department == get(/databases/$(database)/documents/userInvites/$(incoming().inviteId)).data.department &&
+            incoming().status == 'active'
+          ) ||
+          (request.auth.uid == userId && incoming().role == 'sales' && incoming().status == 'pending')
+        );
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (
+            request.auth.uid == userId &&
+            incoming().role == existing().role &&
+            incoming().status == existing().status &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])
+          )
+        );
+      allow delete: if isManagement() && isValidId(userId);
+    }
+
+    // 2. Company Settings
+    match /companySettings/{settingId} {
+      allow get: if isVerifiedSignedIn() && isValidId(settingId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid);
+      allow create: if isManagement() &&
+        isValidId(settingId) &&
+        isValidCompanySettings(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().updatedAt == request.time;
+      allow update: if isManagement() &&
+        isValidId(settingId) &&
+        isValidCompanySettings(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // 3. Clients CRM
+    match /clients/{clientId} {
+      allow get: if isVerifiedSignedIn() && isValidId(clientId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(clientId) &&
+        isValidClient(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (isSalesOrManagement() || isAccountsOrManagement());
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(clientId) &&
+        isValidClient(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          ((isSalesOrManagement() || isAccountsOrManagement()) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'companyName', 'contactName', 'email', 'phone', 'taxPin',
+              'address', 'paymentTermsDays', 'notes', 'staffUids', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isManagement() && isValidId(clientId);
+    }
+
+    // 4. Jobs & Job Cards
+    match /jobs/{jobId} {
+      allow get: if isVerifiedSignedIn() && isValidId(jobId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(jobId) &&
+        isValidJob(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/clients/$(incoming().clientId)) &&
+        isSalesOrManagement();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(jobId) &&
+        isValidJob(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (
+            existing().status != 'Cancelled' &&
+            isAccountsOrManagement() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'actualCostTotal', 'commissionRatePct', 'commissionBasis',
+              'commissionAmount', 'commissionStatus', 'commissionPaidDate', 'updatedAt'
+            ])
+          ) ||
+          (
+            !(existing().status in ['Completed', 'Cancelled']) &&
+            (
+              (isProductionOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly([
+                'status', 'checklist', 'artworkNotes', 'tailoringMeasurements',
+                'actualCostTotal', 'assignedProductionName', 'updatedAt'
+              ])) ||
+              (isSalesOrManagement() && existing().status in ['Quoted', 'Approved'] && incoming().diff(existing()).affectedKeys().hasOnly([
+                'title', 'category', 'status', 'priority', 'dueDate', 'printMethod',
+                'substrateOrFabric', 'colorSpecs', 'quantity', 'sizeBreakdown',
+                'artworkNotes', 'tailoringMeasurements', 'pricingMode', 'vatTreatment',
+                'vatRate', 'unitPrice', 'netTotal', 'vatAmount', 'grossTotal',
+                'estimatedMaterialCost', 'estimatedLaborCost', 'estimatedSubcontractCost',
+                'estimatedOverheadCost', 'assignedSalesUid', 'assignedSalesName',
+                'commissionRatePct', 'commissionBasis', 'commissionAmount', 'updatedAt'
+              ]))
+            )
+          )
+        );
+      allow delete: if isManagement() && isValidId(jobId);
+
+      // 4a. Job Cost Entries Subcollection (Master Gate)
+      match /costs/{costId} {
+        allow get: if isVerifiedSignedIn() && isValidId(jobId) && isValidId(costId) &&
+          exists(/databases/$(database)/documents/jobs/$(jobId)) && isActiveStaff();
+        allow list: if isVerifiedSignedIn() && isValidId(jobId) && (
+          isBootstrappedAdmin() ||
+          resource.data.ownerUid == request.auth.uid ||
+          (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+        );
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(jobId) &&
+          isValidId(costId) &&
+          isValidJobCost(incoming(), jobId) &&
+          incoming().ownerUid == request.auth.uid &&
+          request.auth.uid in incoming().staffUids &&
+          incoming().createdAt == request.time &&
+          existsAfter(/databases/$(database)/documents/jobs/$(jobId)) &&
+          (isProductionOrManagement() || isAccountsOrManagement());
+        allow update: if false;
+        allow delete: if isManagement() && isValidId(jobId) && isValidId(costId);
+      }
+    }
+
+    // 5. Invoices (VAT & Receivables)
+    match /invoices/{invoiceId} {
+      allow get: if isVerifiedSignedIn() && isValidId(invoiceId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(invoiceId) &&
+        isValidInvoice(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/clients/$(incoming().clientId)) &&
+        (isAccountsOrManagement() || isSalesOrManagement());
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(invoiceId) &&
+        isValidInvoice(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (
+            existing().status != 'Void' &&
+            isAccountsOrManagement() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'amountPaid', 'balanceDue', 'paymentMethod',
+              'paymentReference', 'notes', 'dueDate', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isManagement() && isValidId(invoiceId);
+    }
+
+    // 6. Expenses (Input VAT & Payables)
+    match /expenses/{expenseId} {
+      allow get: if isVerifiedSignedIn() && isValidId(expenseId) && (isAccountsOrManagement() || isBootstrappedAdmin());
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(expenseId) &&
+        isValidExpense(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAccountsOrManagement();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(expenseId) &&
+        isValidExpense(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (isAccountsOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'paymentStatus', 'vendorVatPin', 'vendorInvoiceRef', 'isVatClaimable', 'notes', 'updatedAt'
+          ]))
+        );
+      allow delete: if isManagement() && isValidId(expenseId);
+    }
+
+    // 7. Employees (HR Directory - PII & Salary Protected)
+    match /employees/{employeeId} {
+      allow get: if isVerifiedSignedIn() && isValidId(employeeId) && (
+        isAccountsOrManagement() ||
+        existing().userUid == request.auth.uid ||
+        existing().ownerUid == request.auth.uid
+      );
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        resource.data.userUid == request.auth.uid ||
+        (resource.data.hrViewerUids is list && resource.data.hrViewerUids.size() <= 10 && request.auth.uid in resource.data.hrViewerUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(employeeId) &&
+        isValidEmployee(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().hrViewerUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAccountsOrManagement();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(employeeId) &&
+        isValidEmployee(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (isAccountsOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'fullName', 'email', 'phone', 'department', 'jobTitle', 'employmentType',
+            'hourlyRate', 'monthlySalary', 'taxDeductionRate', 'annualLeaveBalance',
+            'sickLeaveBalance', 'status', 'userUid', 'hrViewerUids', 'updatedAt'
+          ]))
+        );
+      allow delete: if isManagement() && isValidId(employeeId);
+    }
+
+    // 8. Time Entries (Time Tracking)
+    match /timeEntries/{entryId} {
+      allow get: if isVerifiedSignedIn() && isValidId(entryId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(entryId) &&
+        isValidTimeEntry(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isActiveStaff();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(entryId) &&
+        isValidTimeEntry(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (
+            existing().status != 'Approved' &&
+            existing().ownerUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'clockOutIso', 'breakMinutes', 'regularHours', 'overtimeHours',
+              'totalHours', 'laborCost', 'status', 'notes', 'jobId', 'jobNumber', 'updatedAt'
+            ]) &&
+            incoming().status in ['Clocked In', 'Completed']
+          ) ||
+          (
+            isAccountsOrManagement() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isManagement() && isValidId(entryId);
+    }
+
+    // 9. Leave Requests
+    match /leaveRequests/{requestId} {
+      allow get: if isVerifiedSignedIn() && isValidId(requestId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(requestId) &&
+        isValidLeaveRequest(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().status == 'Pending' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isActiveStaff();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(requestId) &&
+        isValidLeaveRequest(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (
+            existing().status == 'Pending' &&
+            isAccountsOrManagement() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedByName', 'updatedAt'])
+          )
+        );
+      allow delete: if isManagement() && isValidId(requestId);
+    }
+
+    // 10. Payroll Runs
+    match /payrollRuns/{runId} {
+      allow get: if isVerifiedSignedIn() && isValidId(runId) && isAccountsOrManagement();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.hrViewerUids is list && resource.data.hrViewerUids.size() <= 10 && request.auth.uid in resource.data.hrViewerUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(runId) &&
+        isValidPayrollRun(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().hrViewerUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAccountsOrManagement();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(runId) &&
+        isValidPayrollRun(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (existing().status != 'Paid' && isAccountsOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'notes', 'updatedAt']))
+        );
+      allow delete: if isManagement() && isValidId(runId);
+    }
+
+    // 11. Operational Sticky Notes (Manager Reminders)
+    match /notes/{noteId} {
+      allow get: if isVerifiedSignedIn() && isValidId(noteId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(noteId) &&
+        isValidNote(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isManagement();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(noteId) &&
+        isValidNote(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        isManagement();
+      allow delete: if isManagement() && isValidId(noteId);
+    }
+
+    // 12. Supplier Tax Invoices (Input VAT & Accounts Payable)
+    match /supplierInvoices/{supplierInvoiceId} {
+      allow get: if isVerifiedSignedIn() && isValidId(supplierInvoiceId) && (isAccountsOrManagement() || isBootstrappedAdmin());
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.viewerUids is list && resource.data.viewerUids.size() <= 10 && request.auth.uid in resource.data.viewerUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(supplierInvoiceId) &&
+        isValidSupplierInvoice(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().viewerUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAccountsOrManagement();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(supplierInvoiceId) &&
+        isValidSupplierInvoice(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (isAccountsOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'amountPaid', 'balanceDue', 'paymentMethod',
+            'paymentReference', 'supplierTaxPin', 'isVatClaimable', 'notes',
+            'dueDate', 'updatedAt'
+          ]))
+        );
+      allow delete: if isManagement() && isValidId(supplierInvoiceId);
+    }
+
+    // 13. Inventory & Samples
+    match /inventoryItems/{itemId} {
+      allow get: if isVerifiedSignedIn() && isValidId(itemId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(itemId) &&
+        isValidInventoryItem(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isActiveStaff();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(itemId) &&
+        isValidInventoryItem(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (isActiveStaff() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'quantityOnHand', 'status', 'location', 'sampleClientOrSpec',
+            'notes', 'reorderLevel', 'unitCost', 'supplierName', 'updatedAt'
+          ]))
+        );
+      allow delete: if isManagement() && isValidId(itemId);
+
+      // 13a. Inventory Stock Movements Subcollection (Master Gate)
+      match /movements/{movementId} {
+        allow get: if isVerifiedSignedIn() && isValidId(itemId) && isValidId(movementId) &&
+          exists(/databases/$(database)/documents/inventoryItems/$(itemId)) && isActiveStaff();
+        allow list: if isVerifiedSignedIn() && isValidId(itemId) && (
+          isBootstrappedAdmin() ||
+          resource.data.ownerUid == request.auth.uid ||
+          (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+        );
+        allow create: if isVerifiedSignedIn() &&
+          isValidId(itemId) &&
+          isValidId(movementId) &&
+          isValidInventoryMovement(incoming(), itemId) &&
+          incoming().ownerUid == request.auth.uid &&
+          request.auth.uid in incoming().staffUids &&
+          incoming().createdAt == request.time &&
+          existsAfter(/databases/$(database)/documents/inventoryItems/$(itemId)) &&
+          isActiveStaff();
+        allow update: if false;
+        allow delete: if isManagement() && isValidId(itemId) && isValidId(movementId);
+      }
+    }
+
+    // 14. Goods Received Notes (GRN)
+    match /goodsReceipts/{grnId} {
+      allow get: if isVerifiedSignedIn() && isValidId(grnId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(grnId) &&
+        isValidGoodsReceipt(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isActiveStaff();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(grnId) &&
+        isValidGoodsReceipt(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (
+            (isAccountsOrManagement() || isProductionOrManagement()) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'conditionStatus', 'supplierInvoiceId', 'supplierInvoiceNo', 'notes', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isManagement() && isValidId(grnId);
+    }
+
+    // 15. Cash Book Ledger (Management & Accounts)
+    match /cashBookEntries/{entryId} {
+      allow get: if isVerifiedSignedIn() && isValidId(entryId) && (isAccountsOrManagement() || isBootstrappedAdmin());
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.viewerUids is list && resource.data.viewerUids.size() <= 10 && request.auth.uid in resource.data.viewerUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(entryId) &&
+        isValidCashBookEntry(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().viewerUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAccountsOrManagement();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(entryId) &&
+        isValidCashBookEntry(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (isAccountsOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'reconciled', 'reference', 'linkedDocRef', 'notes', 'updatedAt'
+          ]))
+        );
+      allow delete: if isManagement() && isValidId(entryId);
+    }
+
+    // 16. Chart of Accounts (Editable Banks, Mobile Money, Cash & Ledger Accounts)
+    match /chartOfAccounts/{accountId} {
+      allow get: if isVerifiedSignedIn() && isValidId(accountId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(accountId) &&
+        isValidChartAccount(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAccountsOrManagement();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(accountId) &&
+        isValidChartAccount(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (isAccountsOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'code', 'name', 'accountType', 'subType', 'currency',
+            'bankName', 'accountNumber', 'branch', 'openingBalance',
+            'isCashBookAccount', 'isActive', 'notes', 'staffUids', 'updatedAt'
+          ]))
+        );
+      allow delete: if isManagement() && isValidId(accountId);
+    }
+
+    // 17. Pre-Authorized User Invites (Owner Onboarding)
+    match /userInvites/{inviteId} {
+      allow get: if isVerifiedSignedIn() && isValidId(inviteId) && (
+        isManagement() ||
+        existing().email == request.auth.token.email.lower()
+      );
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        ('adminUids' in resource.data && resource.data.adminUids is list && resource.data.adminUids.size() <= 10 && request.auth.uid in resource.data.adminUids) ||
+        resource.data.email == request.auth.token.email.lower()
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(inviteId) &&
+        isValidUserInvite(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().adminUids &&
+        incoming().status == 'invited' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isManagement();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(inviteId) &&
+        isValidUserInvite(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (
+            existing().status == 'invited' &&
+            existing().email == request.auth.token.email.lower() &&
+            incoming().status == 'accepted' &&
+            incoming().acceptedUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'acceptedUid', 'updatedAt'])
+          )
+        );
+      allow delete: if isManagement() && isValidId(inviteId);
+    }
+  }
+}

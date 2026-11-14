@@ -1,0 +1,551 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Authenticated Megaprint staff profile and role assignment",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["management", "sales", "accounts", "production"] },
+        "department": { "type": "string", "enum": ["Management", "Sales & Marketing", "Accounts", "Production"] },
+        "status": { "type": "string", "enum": ["active", "pending", "disabled"] },
+        "commissionRatePct": { "type": "number" },
+        "inviteId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role", "department", "status", "createdAt", "updatedAt"]
+    },
+    "CompanySettings": {
+      "title": "Company Settings",
+      "description": "Global Megaprint configuration including VAT rate, currency, tax PIN, and custom logo",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "tagline": { "type": "string", "maxLength": 200 },
+        "taxPin": { "type": "string", "maxLength": 64 },
+        "address": { "type": "string", "maxLength": 300 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "maxLength": 200 },
+        "currency": { "type": "string", "minLength": 3, "maxLength": 6 },
+        "defaultVatRate": { "type": "number" },
+        "defaultCommissionRatePct": { "type": "number" },
+        "defaultCommissionBasis": { "type": "string", "enum": ["net_sales", "gross_profit"] },
+        "logoDataUrl": { "type": "string", "maxLength": 200000 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyName", "currency", "defaultVatRate", "ownerUid", "updatedAt"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "B2B or retail customer for printing, branding, corporate wear, and tailoring",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "contactName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "taxPin": { "type": "string", "maxLength": 64 },
+        "address": { "type": "string", "maxLength": 300 },
+        "paymentTermsDays": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyName", "contactName", "paymentTermsDays", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "Job": {
+      "title": "Production Job",
+      "description": "Printing, branding, corporate wear, or tailoring job with job card specs and costing",
+      "type": "object",
+      "properties": {
+        "jobNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "clientId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "clientName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "category": { "type": "string", "enum": ["Printing", "Branding", "Corporate Wear", "Tailoring"] },
+        "status": { "type": "string", "enum": ["Quoted", "Approved", "In Production", "Quality Control", "Ready for Dispatch", "Delivered", "Completed", "Cancelled"] },
+        "priority": { "type": "string", "enum": ["Standard", "Urgent", "Express"] },
+        "dueDate": { "type": "string", "maxLength": 32 },
+        "printMethod": { "type": "string", "maxLength": 120 },
+        "substrateOrFabric": { "type": "string", "maxLength": 160 },
+        "colorSpecs": { "type": "string", "maxLength": 160 },
+        "quantity": { "type": "number" },
+        "sizeBreakdown": { "type": "object" },
+        "artworkNotes": { "type": "string", "maxLength": 2000 },
+        "tailoringMeasurements": { "type": "string", "maxLength": 2000 },
+        "checklist": { "type": "object" },
+        "pricingMode": { "type": "string", "enum": ["exclusive", "inclusive"] },
+        "vatTreatment": { "type": "string", "enum": ["standard", "zero", "exempt"] },
+        "vatRate": { "type": "number" },
+        "unitPrice": { "type": "number" },
+        "netTotal": { "type": "number" },
+        "vatAmount": { "type": "number" },
+        "grossTotal": { "type": "number" },
+        "estimatedMaterialCost": { "type": "number" },
+        "estimatedLaborCost": { "type": "number" },
+        "estimatedSubcontractCost": { "type": "number" },
+        "estimatedOverheadCost": { "type": "number" },
+        "actualCostTotal": { "type": "number" },
+        "assignedSalesUid": { "type": "string", "maxLength": 128 },
+        "assignedSalesName": { "type": "string", "maxLength": 120 },
+        "assignedProductionName": { "type": "string", "maxLength": 120 },
+        "commissionRatePct": { "type": "number" },
+        "commissionBasis": { "type": "string", "enum": ["net_sales", "gross_profit"] },
+        "commissionAmount": { "type": "number" },
+        "commissionStatus": { "type": "string", "enum": ["Pending", "Earned", "Approved", "Paid"] },
+        "commissionPaidDate": { "type": "string", "maxLength": 32 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["jobNumber", "clientId", "clientName", "title", "category", "status", "priority", "quantity", "pricingMode", "vatTreatment", "vatRate", "netTotal", "vatAmount", "grossTotal", "actualCostTotal", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "JobCostEntry": {
+      "title": "Job Cost Entry",
+      "description": "Actual material, labor, subcontract, or overhead cost logged against a job card",
+      "type": "object",
+      "properties": {
+        "jobId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "costType": { "type": "string", "enum": ["Material", "Labor", "Subcontract", "Overhead"] },
+        "description": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "quantity": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "totalCost": { "type": "number" },
+        "loggedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["jobId", "costType", "description", "quantity", "unitCost", "totalCost", "loggedByName", "ownerUid", "staffUids", "createdAt"]
+    },
+    "Invoice": {
+      "title": "Tax Invoice",
+      "description": "VAT-compliant customer invoice linked to a production job",
+      "type": "object",
+      "properties": {
+        "invoiceNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "jobId": { "type": "string", "maxLength": 128 },
+        "jobNumber": { "type": "string", "maxLength": 40 },
+        "clientId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "clientName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "clientVatPin": { "type": "string", "maxLength": 64 },
+        "issueDate": { "type": "string", "maxLength": 32 },
+        "dueDate": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["Draft", "Issued", "Part Paid", "Paid", "Overdue", "Void"] },
+        "pricingMode": { "type": "string", "enum": ["exclusive", "inclusive"] },
+        "vatRate": { "type": "number" },
+        "lines": { "type": "array" },
+        "netAmount": { "type": "number" },
+        "vatAmount": { "type": "number" },
+        "grossAmount": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "balanceDue": { "type": "number" },
+        "paymentMethod": { "type": "string", "maxLength": 60 },
+        "paymentReference": { "type": "string", "maxLength": 120 },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["invoiceNumber", "clientId", "clientName", "issueDate", "dueDate", "status", "pricingMode", "vatRate", "lines", "netAmount", "vatAmount", "grossAmount", "amountPaid", "balanceDue", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "Expense": {
+      "title": "Expense & Supplier Bill",
+      "description": "Operating or material expense tracking claimable Input VAT",
+      "type": "object",
+      "properties": {
+        "expenseNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "vendorName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "vendorVatPin": { "type": "string", "maxLength": 64 },
+        "vendorInvoiceRef": { "type": "string", "maxLength": 80 },
+        "category": { "type": "string", "enum": ["Materials & Substrates", "Tailoring & Trims", "Payroll & Wages", "Utilities & Rent", "Equipment & Maintenance", "Logistics & Delivery", "Marketing & Admin"] },
+        "jobId": { "type": "string", "maxLength": 128 },
+        "expenseDate": { "type": "string", "maxLength": 32 },
+        "isVatClaimable": { "type": "boolean" },
+        "vatRate": { "type": "number" },
+        "netAmount": { "type": "number" },
+        "vatAmount": { "type": "number" },
+        "grossAmount": { "type": "number" },
+        "paymentStatus": { "type": "string", "enum": ["Paid", "Payable"] },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["expenseNumber", "vendorName", "category", "expenseDate", "isVatClaimable", "vatRate", "netAmount", "vatAmount", "grossAmount", "paymentStatus", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "Employee": {
+      "title": "Employee HR Record",
+      "description": "HR profile, compensation, and leave entitlements for Megaprint personnel",
+      "type": "object",
+      "properties": {
+        "employeeCode": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "department": { "type": "string", "enum": ["Management", "Sales & Marketing", "Accounts", "Production"] },
+        "jobTitle": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "employmentType": { "type": "string", "enum": ["Full-Time", "Contract", "Casual"] },
+        "hourlyRate": { "type": "number" },
+        "monthlySalary": { "type": "number" },
+        "taxDeductionRate": { "type": "number" },
+        "annualLeaveBalance": { "type": "number" },
+        "sickLeaveBalance": { "type": "number" },
+        "status": { "type": "string", "enum": ["Active", "On Leave", "Inactive"] },
+        "userUid": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hrViewerUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["employeeCode", "fullName", "department", "jobTitle", "employmentType", "hourlyRate", "monthlySalary", "taxDeductionRate", "annualLeaveBalance", "sickLeaveBalance", "status", "ownerUid", "hrViewerUids", "createdAt", "updatedAt"]
+    },
+    "TimeEntry": {
+      "title": "Time Tracking Entry",
+      "description": "Employee shift clock-in/clock-out and optional job labor attribution",
+      "type": "object",
+      "properties": {
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "department": { "type": "string", "enum": ["Management", "Sales & Marketing", "Accounts", "Production"] },
+        "jobId": { "type": "string", "maxLength": 128 },
+        "jobNumber": { "type": "string", "maxLength": 40 },
+        "date": { "type": "string", "maxLength": 32 },
+        "clockInIso": { "type": "string", "maxLength": 64 },
+        "clockOutIso": { "type": "string", "maxLength": 64 },
+        "breakMinutes": { "type": "number" },
+        "regularHours": { "type": "number" },
+        "overtimeHours": { "type": "number" },
+        "totalHours": { "type": "number" },
+        "hourlyRate": { "type": "number" },
+        "laborCost": { "type": "number" },
+        "status": { "type": "string", "enum": ["Clocked In", "Completed", "Approved"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["employeeId", "employeeName", "department", "date", "clockInIso", "breakMinutes", "regularHours", "overtimeHours", "totalHours", "hourlyRate", "laborCost", "status", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "LeaveRequest": {
+      "title": "Leave Request",
+      "description": "Employee time-off and leave approval record",
+      "type": "object",
+      "properties": {
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "department": { "type": "string", "enum": ["Management", "Sales & Marketing", "Accounts", "Production"] },
+        "leaveType": { "type": "string", "enum": ["Annual", "Sick", "Compassionate", "Unpaid"] },
+        "startDate": { "type": "string", "maxLength": 32 },
+        "endDate": { "type": "string", "maxLength": 32 },
+        "daysCount": { "type": "number" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "status": { "type": "string", "enum": ["Pending", "Approved", "Declined"] },
+        "reviewedByName": { "type": "string", "maxLength": 120 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["employeeId", "employeeName", "department", "leaveType", "startDate", "endDate", "daysCount", "reason", "status", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "PayrollRun": {
+      "title": "Payroll Run",
+      "description": "Monthly or bi-weekly payroll summary batch",
+      "type": "object",
+      "properties": {
+        "periodLabel": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "payDate": { "type": "string", "maxLength": 32 },
+        "employeeCount": { "type": "number" },
+        "totalGrossPay": { "type": "number" },
+        "totalDeductions": { "type": "number" },
+        "totalNetPay": { "type": "number" },
+        "status": { "type": "string", "enum": ["Draft", "Approved", "Paid"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hrViewerUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["periodLabel", "payDate", "employeeCount", "totalGrossPay", "totalDeductions", "totalNetPay", "status", "ownerUid", "hrViewerUids", "createdAt", "updatedAt"]
+    },
+    "OperationalNote": {
+      "title": "Operational Sticky Note",
+      "description": "Quick manager reminder pinned to the dashboard for Megaprint staff",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "audience": { "type": "string", "enum": ["All Staff", "Production", "Sales & Marketing", "Accounts"] },
+        "tone": { "type": "string", "enum": ["amber", "sky", "emerald", "slate"] },
+        "pinned": { "type": "boolean" },
+        "authorName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "body", "audience", "tone", "pinned", "authorName", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "SupplierInvoice": {
+      "title": "Supplier Tax Invoice",
+      "description": "Vendor tax invoice recorded for Input VAT claims and accounts payable tracking",
+      "type": "object",
+      "properties": {
+        "recordNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "supplierName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "supplierTaxPin": { "type": "string", "maxLength": 64 },
+        "supplierInvoiceNo": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "category": { "type": "string", "enum": ["Materials & Substrates", "Tailoring & Trims", "Subcontracting & Finishing", "Equipment & Maintenance", "Logistics & Delivery", "Utilities & Rent", "Marketing & Admin"] },
+        "jobId": { "type": "string", "maxLength": 128 },
+        "jobNumber": { "type": "string", "maxLength": 40 },
+        "invoiceDate": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "dueDate": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "pricingMode": { "type": "string", "enum": ["exclusive", "inclusive"] },
+        "vatTreatment": { "type": "string", "enum": ["standard", "zero", "exempt"] },
+        "isVatClaimable": { "type": "boolean" },
+        "vatRate": { "type": "number" },
+        "lines": { "type": "array" },
+        "netAmount": { "type": "number" },
+        "vatAmount": { "type": "number" },
+        "grossAmount": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "balanceDue": { "type": "number" },
+        "status": { "type": "string", "enum": ["Unpaid", "Part Paid", "Paid", "Disputed"] },
+        "paymentMethod": { "type": "string", "maxLength": 60 },
+        "paymentReference": { "type": "string", "maxLength": 120 },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "viewerUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["recordNumber", "supplierName", "supplierInvoiceNo", "category", "invoiceDate", "dueDate", "pricingMode", "vatTreatment", "isVatClaimable", "vatRate", "lines", "netAmount", "vatAmount", "grossAmount", "amountPaid", "balanceDue", "status", "ownerUid", "viewerUids", "createdAt", "updatedAt"]
+    },
+    "InventoryItem": {
+      "title": "Inventory & Sample Item",
+      "description": "Consumables, inks, substrates, fabrics, trims, and showroom/client samples",
+      "type": "object",
+      "properties": {
+        "sku": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "itemType": { "type": "string", "enum": ["Consumable", "Substrate & Fabric", "Sample", "Packaging & Trims", "Finished Stock"] },
+        "unit": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "quantityOnHand": { "type": "number" },
+        "reorderLevel": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "location": { "type": "string", "maxLength": 120 },
+        "supplierName": { "type": "string", "maxLength": 160 },
+        "sampleClientOrSpec": { "type": "string", "maxLength": 240 },
+        "status": { "type": "string", "enum": ["In Stock", "Low Stock", "Out of Stock"] },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sku", "name", "itemType", "unit", "quantityOnHand", "reorderLevel", "unitCost", "status", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "InventoryMovement": {
+      "title": "Inventory Stock Movement",
+      "description": "Audit log of stock receipts, job issues, sample checkouts/returns, and adjustments",
+      "type": "object",
+      "properties": {
+        "itemId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "movementType": { "type": "string", "enum": ["Stock In", "Issue to Job", "Sample Out", "Sample Return", "Adjustment"] },
+        "quantityDelta": { "type": "number" },
+        "resultingQty": { "type": "number" },
+        "jobId": { "type": "string", "maxLength": 128 },
+        "jobNumber": { "type": "string", "maxLength": 40 },
+        "recipientOrReason": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "loggedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["itemId", "movementType", "quantityDelta", "resultingQty", "recipientOrReason", "loggedByName", "ownerUid", "staffUids", "createdAt"]
+    },
+    "GoodsReceipt": {
+      "title": "Goods Received Note",
+      "description": "Inspection and receipt of supplier deliveries with optional inventory stock posting",
+      "type": "object",
+      "properties": {
+        "grnNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "supplierName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "deliveryNoteRef": { "type": "string", "maxLength": 80 },
+        "supplierInvoiceId": { "type": "string", "maxLength": 128 },
+        "supplierInvoiceNo": { "type": "string", "maxLength": 80 },
+        "jobId": { "type": "string", "maxLength": 128 },
+        "jobNumber": { "type": "string", "maxLength": 40 },
+        "receivedDate": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "receivedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "conditionStatus": { "type": "string", "enum": ["Accepted", "Partial / Short", "Damaged / Rejected"] },
+        "items": { "type": "array" },
+        "totalValue": { "type": "number" },
+        "postToInventory": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["grnNumber", "supplierName", "receivedDate", "receivedByName", "conditionStatus", "items", "totalValue", "postToInventory", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "CashBookEntry": {
+      "title": "Cash Book Transaction",
+      "description": "Cash, EcoCash, petty cash, and bank ledger entry with running balance and reconciliation",
+      "type": "object",
+      "properties": {
+        "entryNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "entryDate": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "entryType": { "type": "string", "enum": ["Receipt (Inflow)", "Payment (Outflow)", "Contra / Transfer"] },
+        "account": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "counterparty": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "category": { "type": "string", "enum": ["Customer Receipt", "Supplier Payment", "Wages & Casuals", "Sales Commission", "Transport & Fuel", "Workshop Petty Cash", "Bank Deposit / Transfer", "Other Operating"] },
+        "reference": { "type": "string", "maxLength": 120 },
+        "linkedDocRef": { "type": "string", "maxLength": 80 },
+        "amount": { "type": "number" },
+        "reconciled": { "type": "boolean" },
+        "recordedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "viewerUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["entryNumber", "entryDate", "entryType", "account", "counterparty", "category", "amount", "reconciled", "recordedByName", "ownerUid", "viewerUids", "createdAt", "updatedAt"]
+    },
+    "ChartAccount": {
+      "title": "Chart of Accounts Entry",
+      "description": "Editable bank, mobile money, cash, asset, liability, equity, revenue, and expense ledger account",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 24 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "accountType": { "type": "string", "enum": ["Asset", "Liability", "Equity", "Revenue", "Expense"] },
+        "subType": { "type": "string", "enum": ["Bank", "Mobile Money", "Cash", "Receivable", "Payable", "Tax / VAT", "Operating", "COGS", "Payroll"] },
+        "currency": { "type": "string", "minLength": 3, "maxLength": 6 },
+        "bankName": { "type": "string", "maxLength": 120 },
+        "accountNumber": { "type": "string", "maxLength": 64 },
+        "branch": { "type": "string", "maxLength": 120 },
+        "openingBalance": { "type": "number" },
+        "isCashBookAccount": { "type": "boolean" },
+        "isActive": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 500 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "name", "accountType", "subType", "currency", "openingBalance", "isCashBookAccount", "isActive", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "UserInvite": {
+      "title": "Staff Access Invite",
+      "description": "Pre-authorized staff invitation created by the owner/management so team members can sign in immediately",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["management", "sales", "accounts", "production"] },
+        "department": { "type": "string", "enum": ["Management", "Sales & Marketing", "Accounts", "Production"] },
+        "commissionRatePct": { "type": "number" },
+        "status": { "type": "string", "enum": ["invited", "accepted", "revoked"] },
+        "invitedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "acceptedUid": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "adminUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "displayName", "role", "department", "commissionRatePct", "status", "invitedByName", "ownerUid", "adminUids", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profiles and RBAC role assignments"
+    },
+    "/companySettings/{settingId}": {
+      "schema": { "$ref": "#/entities/CompanySettings" },
+      "description": "Megaprint company profile, VAT rate, and logo configuration"
+    },
+    "/clients/{clientId}": {
+      "schema": { "$ref": "#/entities/Client" },
+      "description": "Client CRM records"
+    },
+    "/jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/Job" },
+      "description": "Production jobs and job cards"
+    },
+    "/jobs/{jobId}/costs/{costId}": {
+      "schema": { "$ref": "#/entities/JobCostEntry" },
+      "description": "Actual material, labor, and subcontract cost entries for a job"
+    },
+    "/invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/Invoice" },
+      "description": "VAT tax invoices and payment status"
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Supplier bills and Input VAT expenses"
+    },
+    "/supplierInvoices/{supplierInvoiceId}": {
+      "schema": { "$ref": "#/entities/SupplierInvoice" },
+      "description": "Supplier tax invoices for Input VAT tracking and payables"
+    },
+    "/inventoryItems/{itemId}": {
+      "schema": { "$ref": "#/entities/InventoryItem" },
+      "description": "Inventory items including consumables, substrates, fabrics, trims, and samples"
+    },
+    "/inventoryItems/{itemId}/movements/{movementId}": {
+      "schema": { "$ref": "#/entities/InventoryMovement" },
+      "description": "Audit trail of stock movements and sample checkouts for an inventory item"
+    },
+    "/goodsReceipts/{grnId}": {
+      "schema": { "$ref": "#/entities/GoodsReceipt" },
+      "description": "Goods Received Notes (GRN) for supplier deliveries and inspection"
+    },
+    "/cashBookEntries/{entryId}": {
+      "schema": { "$ref": "#/entities/CashBookEntry" },
+      "description": "Cash, M-Pesa, petty cash, and bank ledger entries"
+    },
+    "/employees/{employeeId}": {
+      "schema": { "$ref": "#/entities/Employee" },
+      "description": "Employee HR directory and salary configuration"
+    },
+    "/timeEntries/{entryId}": {
+      "schema": { "$ref": "#/entities/TimeEntry" },
+      "description": "Employee clock-in/clock-out timesheets"
+    },
+    "/leaveRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/LeaveRequest" },
+      "description": "Employee leave requests and approvals"
+    },
+    "/payrollRuns/{runId}": {
+      "schema": { "$ref": "#/entities/PayrollRun" },
+      "description": "Approved payroll run summaries"
+    },
+    "/notes/{noteId}": {
+      "schema": { "$ref": "#/entities/OperationalNote" },
+      "description": "Manager operational sticky notes and reminders for staff"
+    },
+    "/chartOfAccounts/{accountId}": {
+      "schema": { "$ref": "#/entities/ChartAccount" },
+      "description": "Editable Chart of Accounts including banks, mobile money tills, cash drawers, and ledger categories"
+    },
+    "/userInvites/{inviteId}": {
+      "schema": { "$ref": "#/entities/UserInvite" },
+      "description": "Owner/Management pre-authorized staff invitations for login onboarding"
+    }
+  }
+}

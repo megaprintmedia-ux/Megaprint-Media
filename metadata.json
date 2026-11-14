@@ -1,0 +1,6 @@
+{
+  "name": "Megaprint ERP",
+  "description": "Multi-team operations, job cards, costing, VAT accounting, and HR suite for Megaprint (Printing, Branding, Corporate Wear & Tailoring).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
