@@ -48,7 +48,7 @@ service cloud.firestore {
     }
 
     function isBootstrappedAdmin() {
-      return isVerifiedSignedIn() && request.auth.token.email == 'megaprintmedia@gmail.com';
+      return isVerifiedSignedIn() && request.auth.token.email.lower() == 'megaprintmedia@gmail.com';
     }
 
     function userDocExists() {

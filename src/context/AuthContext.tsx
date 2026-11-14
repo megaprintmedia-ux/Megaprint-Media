@@ -1,11 +1,21 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   User,
+  createUserWithEmailAndPassword,
   onAuthStateChanged,
+  sendEmailVerification,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut as firebaseSignOut,
+  updateProfile,
 } from 'firebase/auth';
 import {
   collection,
@@ -40,7 +50,14 @@ interface AuthContextValue {
   setActiveViewRole: (role: UserRole) => void;
   signInWithGoogle: () => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
+  signUpWithEmail: (
+    displayName: string,
+    email: string,
+    password: string
+  ) => Promise<boolean>;
   sendPasswordReset: (email: string) => Promise<boolean>;
+  resendVerificationEmail: () => Promise<boolean>;
+  refreshVerificationStatus: () => Promise<boolean>;
   clearAuthError: () => void;
   signOut: () => Promise<void>;
 }
@@ -61,6 +78,46 @@ export function roleToDepartment(role: UserRole): Department {
   }
 }
 
+function getAuthErrorCode(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    return String((error as { code?: string }).code || '');
+  }
+  return '';
+}
+
+function formatAuthError(error: unknown, fallback: string): string {
+  const code = getAuthErrorCode(error);
+  const host =
+    typeof window !== 'undefined' && window.location.hostname
+      ? window.location.hostname
+      : 'this domain';
+
+  switch (code) {
+    case 'auth/unauthorized-domain':
+      return `Domain "${host}" is not authorized in Firebase yet. Add "${host}" under Firebase Console → Authentication → Settings → Authorized domains.`;
+    case 'auth/operation-not-allowed':
+      return 'Email/Password sign-in is not enabled in Firebase Console yet. Enable Email/Password under Firebase Console → Authentication → Sign-in method, or use Continue with Google below.';
+    case 'auth/email-already-in-use':
+      return 'An account with this email already exists. Switch to Sign In or reset your password.';
+    case 'auth/weak-password':
+      return 'Password must be at least 6 characters long.';
+    case 'auth/invalid-email':
+      return 'Please enter a valid email address.';
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found':
+      return 'Invalid email or password. If you have not created an account yet, switch to Create Account or use Continue with Google.';
+    case 'auth/too-many-requests':
+      return 'Too many attempts. Please wait a moment and try again.';
+    case 'auth/popup-blocked':
+      return 'Sign-in pop-up was blocked by your browser. Please allow pop-ups for this site and try again.';
+    case 'auth/popup-closed-by-user':
+      return 'Google sign-in window was closed before completing sign-in.';
+    default:
+      return error instanceof Error ? error.message : fallback;
+  }
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
@@ -70,19 +127,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [signingIn, setSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [activeViewRole, setActiveViewRole] = useState<UserRole>('sales');
+  const unsubProfileRef = useRef<(() => void) | undefined>(undefined);
 
-  useEffect(() => {
-    let unsubProfile: (() => void) | undefined;
+  const clearProfileSub = useCallback(() => {
+    if (unsubProfileRef.current) {
+      unsubProfileRef.current();
+      unsubProfileRef.current = undefined;
+    }
+  }, []);
 
-    const unsubAuth = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (unsubProfile) {
-        unsubProfile();
-        unsubProfile = undefined;
-      }
+  const bootstrapAndSubscribeProfile = useCallback(
+    async (firebaseUser: User) => {
+      clearProfileSub();
 
-      setUser(firebaseUser);
-
-      if (!firebaseUser) {
+      if (!firebaseUser.emailVerified) {
         setProfile(null);
         setAuthReady(true);
         return;
@@ -98,7 +156,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         if (!snap.exists()) {
           const normalizedEmail = (firebaseUser.email || '').trim().toLowerCase();
 
-          // Check if the owner/management pre-invited this email
           let matchedInvite: {
             id: string;
             displayName: string;
@@ -193,6 +250,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
                   companyName: 'Megaprint',
                   tagline: 'Printing · Branding · Corporate Wear · Tailoring',
                   taxPin: 'BP 0200148291',
+                  zimraTin: '2000148291',
+                  vatRegNumber: '10048291',
                   address: 'Workington Industrial Area, Coventry Road, Harare',
                   phone: '+263 77 200 0000',
                   email: BOOTSTRAPPED_ADMIN_EMAIL,
@@ -212,7 +271,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         console.error('Profile bootstrap error:', error);
       }
 
-      unsubProfile = onSnapshot(
+      unsubProfileRef.current = onSnapshot(
         userRef,
         (docSnap) => {
           if (docSnap.exists()) {
@@ -232,13 +291,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           handleFirestoreError(error, OperationType.GET, `users/${firebaseUser.uid}`);
         }
       );
+    },
+    [clearProfileSub]
+  );
+
+  useEffect(() => {
+    const unsubAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+      clearProfileSub();
+      setUser(firebaseUser);
+
+      if (!firebaseUser) {
+        setProfile(null);
+        setAuthReady(true);
+        return;
+      }
+
+      await bootstrapAndSubscribeProfile(firebaseUser);
     });
 
     return () => {
       unsubAuth();
-      if (unsubProfile) unsubProfile();
+      clearProfileSub();
     };
-  }, []);
+  }, [bootstrapAndSubscribeProfile, clearProfileSub]);
 
   const signInWithGoogle = async () => {
     setSigningIn(true);
@@ -246,9 +321,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (error) {
-      setAuthError(
-        error instanceof Error ? error.message : 'Unable to sign in with Google.'
-      );
+      setAuthError(formatAuthError(error, 'Unable to sign in with Google.'));
     } finally {
       setSigningIn(false);
     }
@@ -265,31 +338,80 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       await signInWithEmailAndPassword(auth, cleanEmail, passwordInput);
     } catch (error) {
-      const code =
-        typeof error === 'object' && error !== null && 'code' in error
-          ? String((error as { code?: string }).code)
-          : '';
-      if (code === 'auth/operation-not-allowed') {
-        setAuthError(
-          'Email/Password sign-in is not enabled in Firebase Console yet. Enable Email/Password under Firebase Console → Authentication → Sign-in method, or use Continue with Google below.'
-        );
-      } else if (
-        code === 'auth/invalid-credential' ||
-        code === 'auth/wrong-password' ||
-        code === 'auth/user-not-found'
-      ) {
-        setAuthError(
-          'Invalid email or password. If your account uses Google sign-in, click "Continue with Google" below.'
-        );
-      } else if (code === 'auth/too-many-requests') {
-        setAuthError('Too many failed attempts. Please wait a moment and try again.');
-      } else {
-        setAuthError(
-          error instanceof Error ? error.message : 'Unable to sign in with email.'
-        );
-      }
+      setAuthError(formatAuthError(error, 'Unable to sign in with email.'));
     } finally {
       setSigningIn(false);
+    }
+  };
+
+  const signUpWithEmail = async (
+    displayNameInput: string,
+    emailInput: string,
+    passwordInput: string
+  ): Promise<boolean> => {
+    const cleanName = displayNameInput.trim();
+    const cleanEmail = emailInput.trim();
+    if (!cleanName || !cleanEmail || passwordInput.length < 6) {
+      setAuthError(
+        'Please provide your full name, a valid email address, and a password of at least 6 characters.'
+      );
+      return false;
+    }
+    setSigningIn(true);
+    setAuthError(null);
+    try {
+      const cred = await createUserWithEmailAndPassword(
+        auth,
+        cleanEmail,
+        passwordInput
+      );
+      await updateProfile(cred.user, { displayName: cleanName.slice(0, 120) });
+      await sendEmailVerification(cred.user);
+      setUser(auth.currentUser);
+      return true;
+    } catch (error) {
+      setAuthError(formatAuthError(error, 'Unable to create your account.'));
+      return false;
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  const resendVerificationEmail = async (): Promise<boolean> => {
+    if (!auth.currentUser) return false;
+    setAuthError(null);
+    try {
+      await sendEmailVerification(auth.currentUser);
+      return true;
+    } catch (error) {
+      setAuthError(
+        formatAuthError(error, 'Unable to resend verification email.')
+      );
+      return false;
+    }
+  };
+
+  const refreshVerificationStatus = async (): Promise<boolean> => {
+    if (!auth.currentUser) return false;
+    setAuthError(null);
+    try {
+      await auth.currentUser.reload();
+      await auth.currentUser.getIdToken(true);
+      const refreshed = auth.currentUser;
+      setUser(refreshed ? ({ ...refreshed } as User) : null);
+      if (refreshed && refreshed.emailVerified) {
+        await bootstrapAndSubscribeProfile(refreshed);
+        return true;
+      }
+      setAuthError(
+        'Email is not verified yet. Please click the verification link in your inbox (or spam folder), then click Continue again.'
+      );
+      return false;
+    } catch (error) {
+      setAuthError(
+        formatAuthError(error, 'Unable to check verification status.')
+      );
+      return false;
     }
   };
 
@@ -304,21 +426,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       await sendPasswordResetEmail(auth, cleanEmail);
       return true;
     } catch (error) {
-      const code =
-        typeof error === 'object' && error !== null && 'code' in error
-          ? String((error as { code?: string }).code)
-          : '';
-      if (code === 'auth/operation-not-allowed') {
-        setAuthError(
-          'Email/Password sign-in is not enabled in Firebase Console yet. Enable Email/Password under Authentication → Sign-in method.'
-        );
-      } else {
-        setAuthError(
-          error instanceof Error
-            ? error.message
-            : 'Unable to send password reset email.'
-        );
-      }
+      setAuthError(
+        formatAuthError(error, 'Unable to send password reset email.')
+      );
       return false;
     }
   };
@@ -327,6 +437,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const signOut = async () => {
     setAuthError(null);
+    clearProfileSub();
     await firebaseSignOut(auth);
   };
 
@@ -342,7 +453,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         setActiveViewRole,
         signInWithGoogle,
         signInWithEmail,
+        signUpWithEmail,
         sendPasswordReset,
+        resendVerificationEmail,
+        refreshVerificationStatus,
         clearAuthError,
         signOut,
       }}

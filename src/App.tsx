@@ -40,7 +40,10 @@ const ErpWorkspace: React.FC = () => {
     setActiveViewRole,
     signInWithGoogle,
     signInWithEmail,
+    signUpWithEmail,
     sendPasswordReset,
+    resendVerificationEmail,
+    refreshVerificationStatus,
     clearAuthError,
     signOut,
   } = useAuth();
@@ -51,6 +54,8 @@ const ErpWorkspace: React.FC = () => {
   const [selectedJobCard, setSelectedJobCard] = useState<Job | null>(null);
   const [prefillInvoiceJob, setPrefillInvoiceJob] = useState<Job | null>(null);
   const [newJobSignal, setNewJobSignal] = useState(0);
+  const [verifyingEmail, setVerifyingEmail] = useState(false);
+  const [verificationNotice, setVerificationNotice] = useState('');
 
   if (!authReady) {
     return (
@@ -62,7 +67,7 @@ const ErpWorkspace: React.FC = () => {
     );
   }
 
-  if (!user || !profile) {
+  if (!user) {
     return (
       <LoginView
         logoDataUrl={erp.settings.logoDataUrl}
@@ -70,10 +75,112 @@ const ErpWorkspace: React.FC = () => {
         signingIn={signingIn}
         authError={authError}
         onSignInWithEmail={signInWithEmail}
+        onSignUpWithEmail={signUpWithEmail}
         onSignInWithGoogle={signInWithGoogle}
         onSendPasswordReset={sendPasswordReset}
         onClearError={clearAuthError}
       />
+    );
+  }
+
+  if (!user.emailVerified) {
+    return (
+      <div className="min-h-screen bg-[#f1f4f6] flex items-center justify-center p-6">
+        <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full overflow-hidden shadow-sm">
+          <div className="h-1.5 w-full bg-[#c5a049]" />
+          <div className="p-8 space-y-5">
+            <BrandLogo companyName="Megaprint" variant="light" />
+            <div className="space-y-2">
+              <h1 className="font-display text-lg font-bold text-slate-900">
+                Verify Your Email Address
+              </h1>
+              <p className="text-sm text-slate-600 leading-relaxed">
+                We sent a verification link to{' '}
+                <strong className="text-slate-900">{user.email}</strong>. Open
+                your inbox (or spam folder), click the link, then click{' '}
+                <strong className="text-slate-900">Continue</strong> below.
+              </p>
+            </div>
+
+            {authError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-700 leading-relaxed">
+                {authError}
+              </div>
+            )}
+
+            {verificationNotice && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs text-emerald-700 leading-relaxed">
+                {verificationNotice}
+              </div>
+            )}
+
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                disabled={verifyingEmail}
+                onClick={async () => {
+                  setVerifyingEmail(true);
+                  setVerificationNotice('');
+                  try {
+                    await refreshVerificationStatus();
+                  } finally {
+                    setVerifyingEmail(false);
+                  }
+                }}
+                className="w-full py-2.5 px-4 rounded-lg bg-[#136e66] hover:bg-[#0e5750] text-white text-xs font-semibold transition-colors disabled:opacity-50"
+              >
+                {verifyingEmail
+                  ? 'Checking verification...'
+                  : "I've Verified My Email — Continue"}
+              </button>
+
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setVerificationNotice('');
+                    const sent = await resendVerificationEmail();
+                    if (sent) {
+                      setVerificationNotice(
+                        `Verification link re-sent to ${user.email}.`
+                      );
+                    }
+                  }}
+                  className="px-3.5 py-2 rounded-md border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Resend Link
+                </button>
+                <button
+                  type="button"
+                  onClick={signOut}
+                  className="px-3.5 py-2 rounded-md border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="bg-white border border-slate-200 rounded-lg max-w-sm w-full p-6 text-center space-y-3">
+          <div className="text-sm font-medium text-slate-700">
+            Setting up your Megaprint workspace profile...
+          </div>
+          <button
+            type="button"
+            onClick={signOut}
+            className="px-3.5 py-1.5 rounded-md border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+          >
+            Sign Out
+          </button>
+        </div>
+      </div>
     );
   }
 

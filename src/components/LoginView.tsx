@@ -8,6 +8,11 @@ interface LoginViewProps {
   signingIn: boolean;
   authError: string | null;
   onSignInWithEmail: (email: string, password: string) => Promise<void>;
+  onSignUpWithEmail: (
+    displayName: string,
+    email: string,
+    password: string
+  ) => Promise<boolean>;
   onSignInWithGoogle: () => Promise<void>;
   onSendPasswordReset: (email: string) => Promise<boolean>;
   onClearError: () => void;
@@ -19,23 +24,51 @@ export const LoginView: React.FC<LoginViewProps> = ({
   signingIn,
   authError,
   onSignInWithEmail,
+  onSignUpWithEmail,
   onSignInWithGoogle,
   onSendPasswordReset,
   onClearError,
 }) => {
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [localError, setLocalError] = useState('');
   const [resetNotice, setResetNotice] = useState('');
+
+  const switchMode = (nextMode: 'signin' | 'signup') => {
+    setMode(nextMode);
+    setLocalError('');
+    setResetNotice('');
+    if (authError) onClearError();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setResetNotice('');
+    setLocalError('');
+
+    if (mode === 'signup') {
+      if (password.length < 6) {
+        setLocalError('Password must be at least 6 characters.');
+        return;
+      }
+      if (password !== confirmPassword) {
+        setLocalError('Passwords do not match.');
+        return;
+      }
+      await onSignUpWithEmail(fullName, email, password);
+      return;
+    }
+
     await onSignInWithEmail(email, password);
   };
 
   const handleReset = async () => {
     setResetNotice('');
+    setLocalError('');
     const sent = await onSendPasswordReset(email);
     if (sent) {
       setResetNotice(
@@ -43,6 +76,8 @@ export const LoginView: React.FC<LoginViewProps> = ({
       );
     }
   };
+
+  const activeError = localError || authError;
 
   return (
     <div className="min-h-screen bg-[#f1f4f6] flex items-center justify-center p-4 sm:p-6">
@@ -59,13 +94,41 @@ export const LoginView: React.FC<LoginViewProps> = ({
             />
           </div>
 
-          <p className="mt-5 mb-6 text-center text-[15px] text-slate-600">
-            Sign in to your business workspace
+          <p className="mt-5 mb-4 text-center text-[15px] text-slate-600">
+            {mode === 'signin'
+              ? 'Sign in to your business workspace'
+              : 'Create your Megaprint workspace account'}
           </p>
 
-          {authError && (
+          {/* Sign In / Create Account Switcher */}
+          <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg mb-5">
+            <button
+              type="button"
+              onClick={() => switchMode('signin')}
+              className={`py-1.5 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                mode === 'signin'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode('signup')}
+              className={`py-1.5 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                mode === 'signup'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Create Account
+            </button>
+          </div>
+
+          {activeError && (
             <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-700 leading-relaxed">
-              {authError}
+              {activeError}
             </div>
           )}
 
@@ -76,6 +139,31 @@ export const LoginView: React.FC<LoginViewProps> = ({
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {mode === 'signup' && (
+              <div>
+                <label
+                  htmlFor="login-fullname"
+                  className="block text-xs font-medium text-slate-700 mb-1.5"
+                >
+                  Full Name
+                </label>
+                <input
+                  id="login-fullname"
+                  type="text"
+                  required
+                  autoComplete="name"
+                  value={fullName}
+                  onChange={(e) => {
+                    setFullName(e.target.value);
+                    if (localError) setLocalError('');
+                    if (authError) onClearError();
+                  }}
+                  placeholder="e.g. Tatenda Moyo"
+                  className="w-full rounded-lg bg-[#e8f0fe] border border-slate-200/80 px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#136e66]/30 focus:border-[#136e66]"
+                />
+              </div>
+            )}
+
             <div>
               <label
                 htmlFor="login-email"
@@ -91,6 +179,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 value={email}
                 onChange={(e) => {
                   setEmail(e.target.value);
+                  if (localError) setLocalError('');
                   if (authError) onClearError();
                 }}
                 placeholder="megaprintmedia@gmail.com"
@@ -106,23 +195,29 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 >
                   Password
                 </label>
-                <button
-                  type="button"
-                  onClick={handleReset}
-                  className="text-[11px] font-medium text-[#136e66] hover:underline"
-                >
-                  Forgot password?
-                </button>
+                {mode === 'signin' && (
+                  <button
+                    type="button"
+                    onClick={handleReset}
+                    className="text-[11px] font-medium text-[#136e66] hover:underline"
+                  >
+                    Forgot password?
+                  </button>
+                )}
               </div>
               <div className="relative">
                 <input
                   id="login-password"
                   type={showPassword ? 'text' : 'password'}
                   required
-                  autoComplete="current-password"
+                  minLength={6}
+                  autoComplete={
+                    mode === 'signin' ? 'current-password' : 'new-password'
+                  }
                   value={password}
                   onChange={(e) => {
                     setPassword(e.target.value);
+                    if (localError) setLocalError('');
                     if (authError) onClearError();
                   }}
                   placeholder="••••••••"
@@ -143,12 +238,44 @@ export const LoginView: React.FC<LoginViewProps> = ({
               </div>
             </div>
 
+            {mode === 'signup' && (
+              <div>
+                <label
+                  htmlFor="login-confirm-password"
+                  className="block text-xs font-medium text-slate-700 mb-1.5"
+                >
+                  Confirm Password
+                </label>
+                <input
+                  id="login-confirm-password"
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  minLength={6}
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => {
+                    setConfirmPassword(e.target.value);
+                    if (localError) setLocalError('');
+                    if (authError) onClearError();
+                  }}
+                  placeholder="••••••••"
+                  className="w-full rounded-lg bg-[#e8f0fe] border border-slate-200/80 px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#136e66]/30 focus:border-[#136e66]"
+                />
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={signingIn}
               className="w-full py-2.5 px-4 rounded-lg bg-[#136e66] hover:bg-[#0e5750] text-white text-sm font-semibold transition-colors disabled:opacity-50 cursor-pointer"
             >
-              {signingIn ? 'Signing in...' : 'Sign in'}
+              {signingIn
+                ? mode === 'signin'
+                  ? 'Signing in...'
+                  : 'Creating account...'
+                : mode === 'signin'
+                  ? 'Sign in'
+                  : 'Create Account'}
             </button>
           </form>
 
@@ -163,6 +290,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
             type="button"
             onClick={() => {
               setResetNotice('');
+              setLocalError('');
               onSignInWithGoogle();
             }}
             disabled={signingIn}
@@ -188,6 +316,13 @@ export const LoginView: React.FC<LoginViewProps> = ({
             </svg>
             <span>Continue with Google</span>
           </button>
+
+          {mode === 'signup' && (
+            <p className="mt-4 text-center text-[11px] text-slate-500 leading-relaxed">
+              First-time email sign-ups receive a verification link. Pre-invited
+              team members are activated automatically upon verification.
+            </p>
+          )}
         </div>
       </div>
     </div>
