@@ -7,6 +7,7 @@ import {
   Calculator,
   ClipboardList,
   Clock,
+  FileCheck2,
   FileSpreadsheet,
   LayoutDashboard,
   PackageCheck,
@@ -77,6 +78,13 @@ const NAV_ITEMS: NavItem[] = [
     id: 'goods-received',
     label: 'Goods Received (GRN)',
     icon: PackageCheck,
+    roles: ['management', 'production', 'accounts', 'sales'],
+    group: 'Operations',
+  },
+  {
+    id: 'requisitions',
+    label: 'Requisitions',
+    icon: FileCheck2,
     roles: ['management', 'production', 'accounts', 'sales'],
     group: 'Operations',
   },
@@ -191,6 +199,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 {items.map((item) => {
                   const Icon = item.icon;
                   const isActive = activeSection === item.id;
+                  const displayLabel =
+                    item.id === 'my-account'
+                      ? role === 'production'
+                        ? 'My Account'
+                        : role === 'sales'
+                          ? 'My Account & Commissions'
+                          : 'Team & Sales Comm.'
+                      : item.label;
                   return (
                     <button
                       key={item.id}
@@ -206,7 +222,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       }`}
                     >
                       <Icon className="h-4 w-4 shrink-0" />
-                      <span className="truncate">{item.label}</span>
+                      <span className="truncate">{displayLabel}</span>
                     </button>
                   );
                 })}

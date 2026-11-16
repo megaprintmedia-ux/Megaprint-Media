@@ -19,6 +19,7 @@ const SECTION_TITLES: Record<NavSection, string> = {
   clients: 'Clients & Quotes',
   inventory: 'Inventory, Consumables & Samples',
   'goods-received': 'Goods Received Notes (GRN)',
+  requisitions: 'Requisitions & Approvals',
   invoices: 'Invoices & VAT',
   'supplier-invoices': 'Supplier Tax Invoices',
   'cash-book': 'Cash Book & Bank Ledger',
@@ -66,7 +67,9 @@ export const TopBar: React.FC<TopBarProps> = ({
           </span>
           <span className="text-slate-300 hidden sm:inline">/</span>
           <h1 className="font-display font-semibold text-slate-900 truncate">
-            {SECTION_TITLES[activeSection]}
+            {activeSection === 'my-account' && activeViewRole === 'production'
+              ? 'My Account'
+              : SECTION_TITLES[activeSection]}
           </h1>
         </div>
       </div>

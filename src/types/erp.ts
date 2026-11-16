@@ -44,6 +44,7 @@ export type NavSection =
   | 'clients'
   | 'inventory'
   | 'goods-received'
+  | 'requisitions'
   | 'invoices'
   | 'supplier-invoices'
   | 'cash-book'
@@ -594,6 +595,57 @@ export interface UserInvite {
   acceptedUid: string;
   ownerUid: string;
   adminUids: string[];
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type RequisitionType =
+  | 'Purchase Requisition'
+  | 'Stock / Material Issue'
+  | 'Petty Cash / Expense';
+
+export type RequisitionPriority = 'Normal' | 'Urgent' | 'Critical';
+
+export type RequisitionStatus =
+  | 'Draft'
+  | 'Submitted'
+  | 'Approved'
+  | 'Rejected'
+  | 'Fulfilled';
+
+export interface RequisitionLine {
+  inventoryItemId: string;
+  sku: string;
+  description: string;
+  quantity: number;
+  unit: string;
+  estimatedUnitCost: number;
+  estimatedTotal: number;
+}
+
+export interface Requisition {
+  id: string;
+  requisitionNumber: string;
+  requisitionDate: string;
+  neededByDate: string;
+  requisitionType: RequisitionType;
+  department: Department;
+  priority: RequisitionPriority;
+  jobId: string;
+  jobNumber: string;
+  preferredSupplier: string;
+  requestedByUid: string;
+  requestedByName: string;
+  lines: RequisitionLine[];
+  totalEstimatedCost: number;
+  justification: string;
+  status: RequisitionStatus;
+  approvedByName: string;
+  approvedDate: string;
+  fulfillmentNotes: string;
+  linkedRef: string;
+  ownerUid: string;
+  staffUids: string[];
   createdAt?: unknown;
   updatedAt?: unknown;
 }

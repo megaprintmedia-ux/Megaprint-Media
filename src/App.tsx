@@ -12,6 +12,7 @@ import { JobCardModal } from './components/JobCardModal';
 import { ClientsView } from './components/ClientsView';
 import { InventoryView } from './components/InventoryView';
 import { GoodsReceivedView } from './components/GoodsReceivedView';
+import { RequisitionsView } from './components/RequisitionsView';
 import { InvoicesVatView } from './components/InvoicesVatView';
 import { SupplierInvoicesView } from './components/SupplierInvoicesView';
 import { CashBookView } from './components/CashBookView';
@@ -32,6 +33,7 @@ const DEFAULT_SECTION_BY_ROLE: Record<UserRole, NavSection> = {
 const ErpWorkspace: React.FC = () => {
   const {
     user,
+    emailVerified,
     profile,
     authReady,
     signingIn,
@@ -44,6 +46,7 @@ const ErpWorkspace: React.FC = () => {
     sendPasswordReset,
     resendVerificationEmail,
     refreshVerificationStatus,
+    retryProfileSetup,
     clearAuthError,
     signOut,
   } = useAuth();
@@ -83,13 +86,17 @@ const ErpWorkspace: React.FC = () => {
     );
   }
 
-  if (!user.emailVerified) {
+  if (!emailVerified) {
     return (
       <div className="min-h-screen bg-[#f1f4f6] flex items-center justify-center p-6">
         <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full overflow-hidden shadow-sm">
           <div className="h-1.5 w-full bg-[#c5a049]" />
           <div className="p-8 space-y-5">
-            <BrandLogo companyName="Megaprint" variant="light" />
+            <BrandLogo
+              logoDataUrl={erp.settings.logoDataUrl}
+              companyName={erp.settings.companyName || 'Megaprint'}
+              variant="light"
+            />
             <div className="space-y-2">
               <h1 className="font-display text-lg font-bold text-slate-900">
                 Verify Your Email Address
@@ -97,8 +104,11 @@ const ErpWorkspace: React.FC = () => {
               <p className="text-sm text-slate-600 leading-relaxed">
                 We sent a verification link to{' '}
                 <strong className="text-slate-900">{user.email}</strong>. Open
-                your inbox (or spam folder), click the link, then click{' '}
-                <strong className="text-slate-900">Continue</strong> below.
+                your inbox or <strong>Spam / Junk</strong> folder for an email from{' '}
+                <span className="font-mono text-xs text-slate-800">
+                  noreply@spheric-machine-1v0ns.firebaseapp.com
+                </span>
+                , click the link, and this page will continue automatically.
               </p>
             </div>
 
@@ -122,7 +132,7 @@ const ErpWorkspace: React.FC = () => {
                   setVerifyingEmail(true);
                   setVerificationNotice('');
                   try {
-                    await refreshVerificationStatus();
+                    await refreshVerificationStatus({ silent: false });
                   } finally {
                     setVerifyingEmail(false);
                   }
@@ -134,6 +144,15 @@ const ErpWorkspace: React.FC = () => {
                   : "I've Verified My Email — Continue"}
               </button>
 
+              <button
+                type="button"
+                disabled={signingIn}
+                onClick={signInWithGoogle}
+                className="w-full py-2.5 px-4 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors disabled:opacity-50"
+              >
+                Continue with Google (Instant Verification)
+              </button>
+
               <div className="flex items-center justify-between gap-2 pt-1">
                 <button
                   type="button"
@@ -142,7 +161,7 @@ const ErpWorkspace: React.FC = () => {
                     const sent = await resendVerificationEmail();
                     if (sent) {
                       setVerificationNotice(
-                        `Verification link re-sent to ${user.email}.`
+                        `Fresh verification link sent to ${user.email}. Check Inbox and Spam/Junk.`
                       );
                     }
                   }}
@@ -172,13 +191,27 @@ const ErpWorkspace: React.FC = () => {
           <div className="text-sm font-medium text-slate-700">
             Setting up your Megaprint workspace profile...
           </div>
-          <button
-            type="button"
-            onClick={signOut}
-            className="px-3.5 py-1.5 rounded-md border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-          >
-            Sign Out
-          </button>
+          {authError && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 text-left">
+              {authError}
+            </div>
+          )}
+          <div className="flex items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={retryProfileSetup}
+              className="px-3.5 py-1.5 rounded-md bg-blue-600 text-xs font-semibold text-white hover:bg-blue-700"
+            >
+              Retry Setup
+            </button>
+            <button
+              type="button"
+              onClick={signOut}
+              className="px-3.5 py-1.5 rounded-md border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+            >
+              Sign Out
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -349,6 +382,23 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
+              {activeSection === 'requisitions' && (
+                <RequisitionsView
+                  role={effectiveRole}
+                  profile={profile}
+                  settings={erp.settings}
+                  requisitions={erp.requisitions}
+                  inventoryItems={erp.inventoryItems}
+                  jobs={erp.jobs}
+                  chartOfAccounts={erp.chartOfAccounts}
+                  onCreateRequisition={erp.createRequisition}
+                  onUpdateRequisition={erp.updateRequisition}
+                  onReviewRequisition={erp.reviewRequisition}
+                  onFulfillRequisition={erp.fulfillRequisition}
+                  onDeleteRequisition={erp.deleteRequisition}
+                />
+              )}
+
               {activeSection === 'invoices' && (
                 <InvoicesVatView
                   role={effectiveRole}
@@ -498,6 +548,7 @@ const ErpWorkspace: React.FC = () => {
           job={liveSelectedJob}
           settings={erp.settings}
           role={effectiveRole}
+          users={erp.users}
           onClose={() => setSelectedJobCard(null)}
           onUpdateJob={erp.updateJob}
           onUpdateJobCommission={erp.updateJobCommission}

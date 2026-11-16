@@ -497,6 +497,37 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["email", "displayName", "role", "department", "commissionRatePct", "status", "invitedByName", "ownerUid", "adminUids", "createdAt", "updatedAt"]
+    },
+    "Requisition": {
+      "title": "Internal Requisition",
+      "description": "Purchase, stock/material issue, or petty cash requisition raised by Megaprint staff for approval and fulfillment",
+      "type": "object",
+      "properties": {
+        "requisitionNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "requisitionDate": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "neededByDate": { "type": "string", "maxLength": 32 },
+        "requisitionType": { "type": "string", "enum": ["Purchase Requisition", "Stock / Material Issue", "Petty Cash / Expense"] },
+        "department": { "type": "string", "enum": ["Management", "Sales & Marketing", "Accounts", "Production"] },
+        "priority": { "type": "string", "enum": ["Normal", "Urgent", "Critical"] },
+        "jobId": { "type": "string", "maxLength": 128 },
+        "jobNumber": { "type": "string", "maxLength": 40 },
+        "preferredSupplier": { "type": "string", "maxLength": 160 },
+        "requestedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "requestedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "lines": { "type": "array" },
+        "totalEstimatedCost": { "type": "number" },
+        "justification": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["Draft", "Submitted", "Approved", "Rejected", "Fulfilled"] },
+        "approvedByName": { "type": "string", "maxLength": 120 },
+        "approvedDate": { "type": "string", "maxLength": 32 },
+        "fulfillmentNotes": { "type": "string", "maxLength": 500 },
+        "linkedRef": { "type": "string", "maxLength": 80 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["requisitionNumber", "requisitionDate", "requisitionType", "department", "priority", "requestedByUid", "requestedByName", "lines", "totalEstimatedCost", "status", "ownerUid", "staffUids", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -575,6 +606,10 @@
     "/userInvites/{inviteId}": {
       "schema": { "$ref": "#/entities/UserInvite" },
       "description": "Owner/Management pre-authorized staff invitations for login onboarding"
+    },
+    "/requisitions/{requisitionId}": {
+      "schema": { "$ref": "#/entities/Requisition" },
+      "description": "Internal purchase, material issue, and petty cash requisitions"
     }
   }
 }

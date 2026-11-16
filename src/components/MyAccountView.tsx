@@ -87,7 +87,9 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
   onNavigate,
 }) => {
   const canInspectTeam = role === 'management' || role === 'accounts';
-  const [selectedMemberKey, setSelectedMemberKey] = useState<string>(profile.uid);
+  const [selectedMemberKey, setSelectedMemberKey] = useState<string>(
+    canInspectTeam ? 'ALL' : profile.uid
+  );
   const [statusFilter, setStatusFilter] = useState<'All' | CommissionStatus>('All');
 
   // Commission payout modal state
@@ -103,19 +105,37 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
     return active.length > 0 ? active : [...DEFAULT_ZIM_CASH_ACCOUNTS];
   }, [chartOfAccounts]);
 
+  const knownUsersByUid = useMemo(() => {
+    const map = new Map<string, UserProfile>();
+    map.set(profile.uid, profile);
+    users.forEach((u) => map.set(u.uid, u));
+    return map;
+  }, [profile, users]);
+
   // Build selectable member list for Management & Accounts
   const memberOptions = useMemo(() => {
     const map = new Map<
       string,
-      { key: string; uid: string; name: string; subtitle: string; commissionRatePct: number }
+      {
+        key: string;
+        uid: string;
+        name: string;
+        role: UserRole;
+        subtitle: string;
+        commissionRatePct: number;
+      }
     >();
 
     map.set(profile.uid, {
       key: profile.uid,
       uid: profile.uid,
       name: profile.displayName,
+      role: profile.role,
       subtitle: `${ROLE_LABELS[profile.role]} (My Account)`,
-      commissionRatePct: profile.commissionRatePct ?? (profile.role === 'sales' ? 5 : 0),
+      commissionRatePct:
+        profile.role === 'sales'
+          ? profile.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5
+          : 0,
     });
 
     users.forEach((u) => {
@@ -124,8 +144,12 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
           key: u.uid,
           uid: u.uid,
           name: u.displayName,
+          role: u.role,
           subtitle: ROLE_LABELS[u.role],
-          commissionRatePct: u.commissionRatePct ?? (u.role === 'sales' ? 5 : 0),
+          commissionRatePct:
+            u.role === 'sales'
+              ? u.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5
+              : 0,
         });
       }
     });
@@ -136,14 +160,25 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
           key: j.assignedSalesUid,
           uid: j.assignedSalesUid,
           name: j.assignedSalesName || 'Sales Rep',
+          role: 'sales',
           subtitle: 'Sales & Marketing',
-          commissionRatePct: j.commissionRatePct ?? 5,
+          commissionRatePct:
+            j.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5,
         });
       }
     });
 
     return Array.from(map.values());
-  }, [profile, users, jobs]);
+  }, [profile, users, jobs, settings.defaultCommissionRatePct]);
+
+  const salesMemberOptions = useMemo(
+    () => memberOptions.filter((m) => m.role === 'sales'),
+    [memberOptions]
+  );
+  const nonSalesMemberOptions = useMemo(
+    () => memberOptions.filter((m) => m.role !== 'sales'),
+    [memberOptions]
+  );
 
   const effectiveSelection = canInspectTeam ? selectedMemberKey : profile.uid;
   const isAllTeam = canInspectTeam && effectiveSelection === 'ALL';
@@ -156,30 +191,51 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
         key: profile.uid,
         uid: profile.uid,
         name: profile.displayName,
+        role: profile.role,
         subtitle: ROLE_LABELS[profile.role],
-        commissionRatePct: profile.commissionRatePct ?? 0,
+        commissionRatePct:
+          profile.role === 'sales' ? profile.commissionRatePct ?? 5 : 0,
       }
     );
   }, [isAllTeam, memberOptions, effectiveSelection, profile]);
 
+  const showCommissionSection = isAllTeam || selectedMember?.role === 'sales';
+
   const memberUserProfile = useMemo(() => {
     if (!selectedMember) return null;
-    return users.find((u) => u.uid === selectedMember.uid) || (selectedMember.uid === profile.uid ? profile : null);
+    return (
+      users.find((u) => u.uid === selectedMember.uid) ||
+      (selectedMember.uid === profile.uid ? profile : null)
+    );
   }, [selectedMember, users, profile]);
 
-  // Filter jobs belonging to selected member (either Sales Rep or Production Lead)
+  const isJobSalesTeamAttributed = (j: Job) => {
+    if (!j.assignedSalesUid && !j.assignedSalesName) return false;
+    if (j.assignedSalesUid) {
+      const repUser = knownUsersByUid.get(j.assignedSalesUid);
+      if (repUser && repUser.role !== 'sales') return false;
+    }
+    return true;
+  };
+
+  const allSalesTeamJobs = useMemo(() => {
+    return jobs.filter(
+      (j) => j.status !== 'Cancelled' && isJobSalesTeamAttributed(j)
+    );
+  }, [jobs, knownUsersByUid]);
+
+  // Filter jobs belonging to selected Sales member (or all Sales Team)
   const memberSalesJobs = useMemo(() => {
-    const activeJobs = jobs.filter((j) => j.status !== 'Cancelled');
-    if (isAllTeam) return activeJobs;
-    if (!selectedMember) return [];
+    if (isAllTeam) return allSalesTeamJobs;
+    if (!selectedMember || selectedMember.role !== 'sales') return [];
     const targetNameLower = selectedMember.name.trim().toLowerCase();
-    return activeJobs.filter((j) => {
+    return allSalesTeamJobs.filter((j) => {
       if (j.assignedSalesUid) {
         return j.assignedSalesUid === selectedMember.uid;
       }
       return (j.assignedSalesName || '').trim().toLowerCase() === targetNameLower;
     });
-  }, [jobs, isAllTeam, selectedMember]);
+  }, [allSalesTeamJobs, isAllTeam, selectedMember]);
 
   const memberAssignedProductionJobs = useMemo(() => {
     if (isAllTeam || !selectedMember) return [];
@@ -328,11 +384,11 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
               {!isAllTeam && memberUserProfile?.email && (
                 <span>{memberUserProfile.email}</span>
               )}
-              {!isAllTeam && (
+              {!isAllTeam && selectedMember?.role === 'sales' && (
                 <>
                   <span className="text-slate-300">·</span>
                   <span className="font-mono-nums text-slate-700 font-medium">
-                    Default Sales Commission: {selectedMember?.commissionRatePct ?? 0}%
+                    Default Sales Commission: {selectedMember.commissionRatePct}%
                   </span>
                 </>
               )}
@@ -356,247 +412,284 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
             <select
               value={effectiveSelection}
               onChange={(e) => setSelectedMemberKey(e.target.value)}
-              className="border border-slate-200 rounded-md px-3 py-2 text-xs font-medium text-slate-800 bg-white min-w-[220px]"
+              className="border border-slate-200 rounded-md px-3 py-2 text-xs font-medium text-slate-800 bg-white min-w-[240px]"
               aria-label="Select team member account"
             >
-              <option value="ALL">All Sales Team Members ({jobs.filter((j) => j.status !== 'Cancelled').length} jobs)</option>
-              {memberOptions.map((m) => (
-                <option key={m.key} value={m.key}>
-                  {m.name} — {m.subtitle}
+              <optgroup label="Sales Team (Commission Eligible)">
+                <option value="ALL">
+                  All Sales Team Members ({allSalesTeamJobs.length} jobs)
                 </option>
-              ))}
+                {salesMemberOptions.map((m) => (
+                  <option key={m.key} value={m.key}>
+                    {m.name} — {m.subtitle} ({m.commissionRatePct}%)
+                  </option>
+                ))}
+              </optgroup>
+              {nonSalesMemberOptions.length > 0 && (
+                <optgroup label="Non-Commission Staff Accounts">
+                  {nonSalesMemberOptions.map((m) => (
+                    <option key={m.key} value={m.key}>
+                      {m.name} — {m.subtitle}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
         )}
       </div>
 
-      {/* Commission & Sales KPI Strip */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="bg-white border border-slate-200 rounded-lg p-5">
-          <div className="flex items-center justify-between text-xs text-slate-500">
-            <span>Net Sales Attributed</span>
-            <Briefcase className="h-4 w-4 text-slate-400" />
-          </div>
-          <div className="mt-2 font-mono-nums text-2xl font-semibold text-slate-900">
-            {formatMoney(commissionStats.totalNetSales, settings.currency)}
-          </div>
-          <div className="mt-1 text-xs text-slate-500 font-mono-nums">
-            Across {commissionStats.jobCount} attributed jobs
-          </div>
+      {!showCommissionSection && (
+        <div className="bg-slate-50 border border-slate-200 rounded-lg px-5 py-3.5 text-xs text-slate-600 flex flex-wrap items-center justify-between gap-2">
+          <span>
+            Sales commissions apply exclusively to the{' '}
+            <strong className="text-slate-900">Sales &amp; Marketing</strong> team.
+            Showing assigned jobs, timesheets, leave balances, and notices for{' '}
+            <strong className="text-slate-900">{selectedMember?.name}</strong>.
+          </span>
+          {canInspectTeam && (
+            <button
+              type="button"
+              onClick={() => setSelectedMemberKey('ALL')}
+              className="text-xs font-semibold text-blue-700 hover:underline"
+            >
+              View Sales Team Commissions
+            </button>
+          )}
         </div>
+      )}
 
-        <div className="bg-white border border-slate-200 rounded-lg p-5">
-          <div className="flex items-center justify-between text-xs text-slate-500">
-            <span>Earned / Approved Payable</span>
-            <DollarSign className="h-4 w-4 text-blue-600" />
-          </div>
-          <div className="mt-2 font-mono-nums text-2xl font-semibold text-blue-700">
-            {formatMoney(commissionStats.earnedReadyAmount, settings.currency)}
-          </div>
-          <div className="mt-1 text-xs text-slate-500">
-            Ready for payout settlement
-          </div>
-        </div>
+      {showCommissionSection && (
+        <>
+          {/* Commission & Sales KPI Strip */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+            <div className="bg-white border border-slate-200 rounded-lg p-5">
+              <div className="flex items-center justify-between text-xs text-slate-500">
+                <span>Net Sales Attributed</span>
+                <Briefcase className="h-4 w-4 text-slate-400" />
+              </div>
+              <div className="mt-2 font-mono-nums text-2xl font-semibold text-slate-900">
+                {formatMoney(commissionStats.totalNetSales, settings.currency)}
+              </div>
+              <div className="mt-1 text-xs text-slate-500 font-mono-nums">
+                Across {commissionStats.jobCount} attributed jobs
+              </div>
+            </div>
 
-        <div className="bg-white border border-slate-200 rounded-lg p-5">
-          <div className="flex items-center justify-between text-xs text-slate-500">
-            <span>Commission Paid</span>
-            <Check className="h-4 w-4 text-emerald-600" />
-          </div>
-          <div className="mt-2 font-mono-nums text-2xl font-semibold text-emerald-700">
-            {formatMoney(commissionStats.paidAmount, settings.currency)}
-          </div>
-          <div className="mt-1 text-xs text-slate-500">
-            Disbursed &amp; posted to Cash Book
-          </div>
-        </div>
+            <div className="bg-white border border-slate-200 rounded-lg p-5">
+              <div className="flex items-center justify-between text-xs text-slate-500">
+                <span>Earned / Approved Payable</span>
+                <DollarSign className="h-4 w-4 text-blue-600" />
+              </div>
+              <div className="mt-2 font-mono-nums text-2xl font-semibold text-blue-700">
+                {formatMoney(commissionStats.earnedReadyAmount, settings.currency)}
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                Ready for payout settlement
+              </div>
+            </div>
 
-        <div className="bg-white border border-slate-200 rounded-lg p-5">
-          <div className="flex items-center justify-between text-xs text-slate-500">
-            <span>Pending (Invoiced / WIP)</span>
-            <Clock className="h-4 w-4 text-amber-600" />
-          </div>
-          <div className="mt-2 font-mono-nums text-2xl font-semibold text-amber-700">
-            {formatMoney(commissionStats.pendingAmount, settings.currency)}
-          </div>
-          <div className="mt-1 text-xs text-slate-500">
-            Unlocks to Earned when client settles invoice
-          </div>
-        </div>
-      </div>
+            <div className="bg-white border border-slate-200 rounded-lg p-5">
+              <div className="flex items-center justify-between text-xs text-slate-500">
+                <span>Commission Paid</span>
+                <Check className="h-4 w-4 text-emerald-600" />
+              </div>
+              <div className="mt-2 font-mono-nums text-2xl font-semibold text-emerald-700">
+                {formatMoney(commissionStats.paidAmount, settings.currency)}
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                Disbursed &amp; posted to Cash Book
+              </div>
+            </div>
 
-      {/* Job-by-Job Sales Commission Trace */}
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h3 className="font-display text-sm font-bold text-slate-900">
-              Job-by-Job Commission Trace Ledger
-            </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Every job tracks its assigned sales rep, rate %, calculation basis, client
-              payment progress, and payout status.
-            </p>
+            <div className="bg-white border border-slate-200 rounded-lg p-5">
+              <div className="flex items-center justify-between text-xs text-slate-500">
+                <span>Pending (Invoiced / WIP)</span>
+                <Clock className="h-4 w-4 text-amber-600" />
+              </div>
+              <div className="mt-2 font-mono-nums text-2xl font-semibold text-amber-700">
+                {formatMoney(commissionStats.pendingAmount, settings.currency)}
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                Unlocks to Earned when client settles invoice
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-md overflow-x-auto">
-            {(['All', 'Pending', 'Earned', 'Approved', 'Paid'] as const).map((st) => (
-              <button
-                key={st}
-                type="button"
-                onClick={() => setStatusFilter(st)}
-                className={`px-2.5 py-1 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  statusFilter === st
-                    ? 'bg-white text-slate-900 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                {st}
-              </button>
-            ))}
-          </div>
-        </div>
 
-        {filteredCommissionJobs.length === 0 ? (
-          <div className="p-10 text-center text-sm text-slate-500">
-            No jobs match this commission filter for the selected account.
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-500">
-                  <th className="py-3 px-4">Job # &amp; Client</th>
-                  {isAllTeam && <th className="py-3 px-4">Sales Rep</th>}
-                  <th className="py-3 px-4">Job Stage &amp; Invoice</th>
-                  <th className="py-3 px-4 text-right">Net Sales / Margin</th>
-                  <th className="py-3 px-4">Commission Rule</th>
-                  <th className="py-3 px-4 text-right">Commission</th>
-                  <th className="py-3 px-4">Comm. Status</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filteredCommissionJobs.map((job) => {
-                  const costing = calculateJobCosting(job);
-                  const invInfo = getLinkedInvoiceState(job.id);
-                  const commStatus: CommissionStatus = job.commissionStatus || 'Pending';
-                  const commRate = job.commissionRatePct ?? 0;
-                  const commBasis: CommissionBasis =
-                    job.commissionBasis || settings.defaultCommissionBasis || 'gross_profit';
-                  const commAmt = job.commissionAmount ?? 0;
+          {/* Job-by-Job Sales Commission Trace */}
+          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="font-display text-sm font-bold text-slate-900">
+                  Job-by-Job Commission Trace Ledger (Sales Team)
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Tracks assigned Sales &amp; Marketing reps, rate %, calculation basis,
+                  client payment progress, and payout status.
+                </p>
+              </div>
+              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-md overflow-x-auto">
+                {(['All', 'Pending', 'Earned', 'Approved', 'Paid'] as const).map((st) => (
+                  <button
+                    key={st}
+                    type="button"
+                    onClick={() => setStatusFilter(st)}
+                    className={`px-2.5 py-1 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      statusFilter === st
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {st}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-                  return (
-                    <tr key={job.id} className="hover:bg-slate-50/70">
-                      <td className="py-3 px-4 align-top">
-                        <button
-                          type="button"
-                          onClick={() => onOpenJobCard(job)}
-                          className="font-mono-nums font-semibold text-blue-700 hover:underline inline-flex items-center gap-1"
-                        >
-                          <span>{job.jobNumber}</span>
-                          <ArrowUpRight className="h-3 w-3" />
-                        </button>
-                        <div className="font-medium text-slate-900 mt-0.5">
-                          {job.clientName}
-                        </div>
-                        <div className="text-[11px] text-slate-500 max-w-[220px] truncate">
-                          {job.title}
-                        </div>
-                      </td>
-                      {isAllTeam && (
-                        <td className="py-3 px-4 align-top font-medium text-slate-800 whitespace-nowrap">
-                          {job.assignedSalesName || 'Unassigned'}
-                        </td>
-                      )}
-                      <td className="py-3 px-4 align-top">
-                        <StatusText status={job.status} />
-                        <div className="text-[11px] text-slate-500 font-mono-nums mt-1">
-                          {invInfo.label}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 align-top text-right font-mono-nums">
-                        <div className="font-semibold text-slate-900">
-                          {formatMoney(job.netTotal, settings.currency)}
-                        </div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">
-                          Net Profit {formatMoney(costing.grossProfit, settings.currency)}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 align-top">
-                        <div className="font-mono-nums font-semibold text-slate-800">
-                          {commRate}%
-                        </div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">
-                          {commBasis === 'gross_profit' ? 'of Job Net Profit' : 'of Net Sales'}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 align-top text-right font-mono-nums font-bold text-slate-900 whitespace-nowrap">
-                        {formatMoney(commAmt, settings.currency)}
-                      </td>
-                      <td className="py-3 px-4 align-top">
-                        <StatusText status={commStatus} />
-                        {job.commissionPaidDate && (
-                          <div className="text-[11px] text-slate-500 font-mono-nums mt-0.5">
-                            Paid {job.commissionPaidDate}
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-3 px-4 align-top text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1.5">
-                          {canInspectTeam && commStatus === 'Pending' && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onUpdateJobCommission(job.id, { commissionStatus: 'Earned' })
-                              }
-                              className="px-2 py-1 rounded border border-slate-200 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
-                            >
-                              Mark Earned
-                            </button>
-                          )}
-                          {canInspectTeam && commStatus === 'Earned' && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onUpdateJobCommission(job.id, {
-                                  commissionStatus: 'Approved',
-                                })
-                              }
-                              className="px-2 py-1 rounded border border-blue-200 bg-blue-50 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
-                            >
-                              Approve
-                            </button>
-                          )}
-                          {canInspectTeam &&
-                            commAmt > 0 &&
-                            (commStatus === 'Earned' || commStatus === 'Approved') && (
-                              <button
-                                type="button"
-                                onClick={() => openPayModal(job)}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-600 text-white text-[11px] font-semibold hover:bg-emerald-700"
-                              >
-                                <CreditCard className="h-3 w-3" />
-                                <span>Pay</span>
-                              </button>
-                            )}
-                          {(!canInspectTeam || commStatus === 'Paid' || commAmt === 0) && (
+            {filteredCommissionJobs.length === 0 ? (
+              <div className="p-10 text-center text-sm text-slate-500">
+                No sales-attributed jobs match this commission filter.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-500">
+                      <th className="py-3 px-4">Job # &amp; Client</th>
+                      {isAllTeam && <th className="py-3 px-4">Sales Rep</th>}
+                      <th className="py-3 px-4">Job Stage &amp; Invoice</th>
+                      <th className="py-3 px-4 text-right">Net Sales / Margin</th>
+                      <th className="py-3 px-4">Commission Rule</th>
+                      <th className="py-3 px-4 text-right">Commission</th>
+                      <th className="py-3 px-4">Comm. Status</th>
+                      <th className="py-3 px-4 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredCommissionJobs.map((job) => {
+                      const costing = calculateJobCosting(job);
+                      const invInfo = getLinkedInvoiceState(job.id);
+                      const commStatus: CommissionStatus = job.commissionStatus || 'Pending';
+                      const commRate = job.commissionRatePct ?? 0;
+                      const commBasis: CommissionBasis =
+                        job.commissionBasis || settings.defaultCommissionBasis || 'gross_profit';
+                      const commAmt = job.commissionAmount ?? 0;
+
+                      return (
+                        <tr key={job.id} className="hover:bg-slate-50/70">
+                          <td className="py-3 px-4 align-top">
                             <button
                               type="button"
                               onClick={() => onOpenJobCard(job)}
-                              className="px-2.5 py-1 rounded border border-slate-200 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                              className="font-mono-nums font-semibold text-blue-700 hover:underline inline-flex items-center gap-1"
                             >
-                              Job Card
+                              <span>{job.jobNumber}</span>
+                              <ArrowUpRight className="h-3 w-3" />
                             </button>
+                            <div className="font-medium text-slate-900 mt-0.5">
+                              {job.clientName}
+                            </div>
+                            <div className="text-[11px] text-slate-500 max-w-[220px] truncate">
+                              {job.title}
+                            </div>
+                          </td>
+                          {isAllTeam && (
+                            <td className="py-3 px-4 align-top font-medium text-slate-800 whitespace-nowrap">
+                              {job.assignedSalesName || 'Unassigned'}
+                            </td>
                           )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                          <td className="py-3 px-4 align-top">
+                            <StatusText status={job.status} />
+                            <div className="text-[11px] text-slate-500 font-mono-nums mt-1">
+                              {invInfo.label}
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 align-top text-right font-mono-nums">
+                            <div className="font-semibold text-slate-900">
+                              {formatMoney(job.netTotal, settings.currency)}
+                            </div>
+                            <div className="text-[11px] text-slate-500 mt-0.5">
+                              Net Profit {formatMoney(costing.grossProfit, settings.currency)}
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 align-top">
+                            <div className="font-mono-nums font-semibold text-slate-800">
+                              {commRate}%
+                            </div>
+                            <div className="text-[11px] text-slate-500 mt-0.5">
+                              {commBasis === 'gross_profit' ? 'of Job Net Profit' : 'of Net Sales'}
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 align-top text-right font-mono-nums font-bold text-slate-900 whitespace-nowrap">
+                            {formatMoney(commAmt, settings.currency)}
+                          </td>
+                          <td className="py-3 px-4 align-top">
+                            <StatusText status={commStatus} />
+                            {job.commissionPaidDate && (
+                              <div className="text-[11px] text-slate-500 font-mono-nums mt-0.5">
+                                Paid {job.commissionPaidDate}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 align-top text-right whitespace-nowrap">
+                            <div className="inline-flex items-center gap-1.5">
+                              {canInspectTeam && commStatus === 'Pending' && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onUpdateJobCommission(job.id, { commissionStatus: 'Earned' })
+                                  }
+                                  className="px-2 py-1 rounded border border-slate-200 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                                >
+                                  Mark Earned
+                                </button>
+                              )}
+                              {canInspectTeam && commStatus === 'Earned' && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onUpdateJobCommission(job.id, {
+                                      commissionStatus: 'Approved',
+                                    })
+                                  }
+                                  className="px-2 py-1 rounded border border-blue-200 bg-blue-50 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
+                                >
+                                  Approve
+                                </button>
+                              )}
+                              {canInspectTeam &&
+                                commAmt > 0 &&
+                                (commStatus === 'Earned' || commStatus === 'Approved') && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openPayModal(job)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-600 text-white text-[11px] font-semibold hover:bg-emerald-700"
+                                  >
+                                    <CreditCard className="h-3 w-3" />
+                                    <span>Pay</span>
+                                  </button>
+                                )}
+                              {(!canInspectTeam || commStatus === 'Paid' || commAmt === 0) && (
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenJobCard(job)}
+                                  className="px-2.5 py-1 rounded border border-slate-200 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                                >
+                                  Job Card
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
 
       {/* Personal Activity & HR Snapshot Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

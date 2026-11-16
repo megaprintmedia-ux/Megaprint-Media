@@ -95,9 +95,9 @@ export const JobsView: React.FC<JobsViewProps> = ({
 
   const salesReps = useMemo(() => {
     const active = users.filter(
-      (u) => u.status === 'active' && (u.role === 'sales' || u.role === 'management')
+      (u) => u.status === 'active' && u.role === 'sales'
     );
-    if (!active.some((u) => u.uid === profile.uid)) {
+    if (profile.role === 'sales' && !active.some((u) => u.uid === profile.uid)) {
       active.unshift(profile);
     }
     return active;
@@ -124,9 +124,15 @@ export const JobsView: React.FC<JobsViewProps> = ({
   const [estLab, setEstLab] = useState('0');
   const [estSub, setEstSub] = useState('0');
   const [estOvh, setEstOvh] = useState('0');
-  const [assignedSalesUid, setAssignedSalesUid] = useState(profile.uid);
+  const [assignedSalesUid, setAssignedSalesUid] = useState(
+    profile.role === 'sales' ? profile.uid : salesReps[0]?.uid || ''
+  );
   const [commissionRatePct, setCommissionRatePct] = useState(
-    String(profile.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5)
+    profile.role === 'sales'
+      ? String(profile.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5)
+      : salesReps[0]
+        ? String(salesReps[0].commissionRatePct ?? settings.defaultCommissionRatePct ?? 5)
+        : '0'
   );
   const [commissionBasis, setCommissionBasis] = useState<CommissionBasis>(
     settings.defaultCommissionBasis || 'gross_profit'
@@ -179,20 +185,24 @@ export const JobsView: React.FC<JobsViewProps> = ({
   const projectedMarginPct =
     vatPreview.netAmount > 0 ? (projectedProfit / vatPreview.netAmount) * 100 : 0;
 
-  const numericCommRate = Math.max(0, Math.min(50, Number(commissionRatePct) || 0));
-  const projectedCommission = calculateJobCommission({
-    netTotal: vatPreview.netAmount,
-    grossProfit: projectedProfit,
-    commissionRatePct: numericCommRate,
-    commissionBasis,
-  });
+  const chosenSalesRep = salesReps.find((r) => r.uid === assignedSalesUid) || null;
+  const numericCommRate = chosenSalesRep
+    ? Math.max(0, Math.min(50, Number(commissionRatePct) || 0))
+    : 0;
+  const projectedCommission = chosenSalesRep
+    ? calculateJobCommission({
+        netTotal: vatPreview.netAmount,
+        grossProfit: projectedProfit,
+        commissionRatePct: numericCommRate,
+        commissionBasis,
+      })
+    : 0;
 
   const handleSubmitJob = async (e: React.FormEvent) => {
     e.preventDefault();
     const chosenClient = clients.find((c) => c.id === clientId) || clients[0];
     if (!chosenClient || !title.trim()) return;
-    const chosenRep =
-      salesReps.find((r) => r.uid === assignedSalesUid) || profile;
+    const chosenRep = salesReps.find((r) => r.uid === assignedSalesUid) || null;
 
     setSaving(true);
     try {
@@ -232,12 +242,12 @@ export const JobsView: React.FC<JobsViewProps> = ({
         estimatedSubcontractCost: Number(estSub) || 0,
         estimatedOverheadCost: Number(estOvh) || 0,
         actualCostTotal: 0,
-        assignedSalesUid: chosenRep.uid,
-        assignedSalesName: chosenRep.displayName,
+        assignedSalesUid: chosenRep ? chosenRep.uid : '',
+        assignedSalesName: chosenRep ? chosenRep.displayName : '',
         assignedProductionName: '',
-        commissionRatePct: numericCommRate,
+        commissionRatePct: chosenRep ? numericCommRate : 0,
         commissionBasis,
-        commissionAmount: projectedCommission,
+        commissionAmount: chosenRep ? projectedCommission : 0,
         commissionStatus: 'Pending',
         commissionPaidDate: '',
       });
@@ -906,10 +916,15 @@ export const JobsView: React.FC<JobsViewProps> = ({
 
                 {/* Sales Rep & Commission Allocation */}
                 <div className="bg-slate-50 border border-slate-200 rounded-md p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-900">
-                      Sales Representative &amp; Commission Allocation
-                    </span>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-semibold text-slate-900">
+                        Sales Team Representative &amp; Commission Allocation
+                      </span>
+                      <p className="text-[11px] text-slate-500">
+                        Commission applies exclusively to Sales &amp; Marketing team members.
+                      </p>
+                    </div>
                     <span className="font-mono-nums text-xs font-bold text-blue-700">
                       Est. Commission:{' '}
                       {formatMoney(projectedCommission, settings.currency)}
@@ -921,21 +936,36 @@ export const JobsView: React.FC<JobsViewProps> = ({
                         Assigned Sales Rep
                       </label>
                       <select
-                        value={assignedSalesUid}
-                        disabled={role !== 'management' && salesReps.length <= 1}
+                        value={chosenSalesRep ? chosenSalesRep.uid : ''}
+                        disabled={profile.role === 'sales' && role !== 'management'}
                         onChange={(e) => {
                           const repUid = e.target.value;
                           setAssignedSalesUid(repUid);
-                          const rep = salesReps.find((r) => r.uid === repUid);
-                          if (rep && rep.commissionRatePct !== undefined) {
-                            setCommissionRatePct(String(rep.commissionRatePct));
+                          if (!repUid) {
+                            setCommissionRatePct('0');
+                            return;
                           }
+                          const rep = salesReps.find((r) => r.uid === repUid);
+                          setCommissionRatePct(
+                            String(
+                              rep?.commissionRatePct ??
+                                settings.defaultCommissionRatePct ??
+                                5
+                            )
+                          );
                         }}
-                        className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white"
+                        className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white disabled:bg-slate-100"
                       >
+                        <option value="">
+                          No Sales Rep / House Job (0% Commission)
+                        </option>
                         {salesReps.map((rep) => (
                           <option key={rep.uid} value={rep.uid}>
-                            {rep.displayName} ({rep.commissionRatePct ?? 5}%)
+                            {rep.displayName} (
+                            {rep.commissionRatePct ??
+                              settings.defaultCommissionRatePct ??
+                              5}
+                            %)
                           </option>
                         ))}
                       </select>
@@ -949,9 +979,10 @@ export const JobsView: React.FC<JobsViewProps> = ({
                         min="0"
                         max="50"
                         step="0.5"
-                        value={commissionRatePct}
+                        disabled={!chosenSalesRep}
+                        value={chosenSalesRep ? commissionRatePct : '0'}
                         onChange={(e) => setCommissionRatePct(e.target.value)}
-                        className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums bg-white"
+                        className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums bg-white disabled:bg-slate-100 disabled:text-slate-400"
                       />
                     </div>
                     <div>
@@ -960,10 +991,11 @@ export const JobsView: React.FC<JobsViewProps> = ({
                       </label>
                       <select
                         value={commissionBasis}
+                        disabled={!chosenSalesRep}
                         onChange={(e) =>
                           setCommissionBasis(e.target.value as CommissionBasis)
                         }
-                        className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white"
+                        className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white disabled:bg-slate-100 disabled:text-slate-400"
                       >
                         <option value="gross_profit">% of Net Profit of Job (Sales − Costs)</option>
                         <option value="net_sales">% of Net Sales (Excl. VAT)</option>

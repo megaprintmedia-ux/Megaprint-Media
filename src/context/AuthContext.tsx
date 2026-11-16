@@ -8,6 +8,7 @@ import React, {
 } from 'react';
 import {
   User,
+  applyActionCode,
   createUserWithEmailAndPassword,
   onAuthStateChanged,
   sendEmailVerification,
@@ -42,6 +43,7 @@ const BOOTSTRAPPED_ADMIN_EMAIL = 'megaprintmedia@gmail.com';
 
 interface AuthContextValue {
   user: User | null;
+  emailVerified: boolean;
   profile: UserProfile | null;
   authReady: boolean;
   signingIn: boolean;
@@ -57,7 +59,8 @@ interface AuthContextValue {
   ) => Promise<boolean>;
   sendPasswordReset: (email: string) => Promise<boolean>;
   resendVerificationEmail: () => Promise<boolean>;
-  refreshVerificationStatus: () => Promise<boolean>;
+  refreshVerificationStatus: (options?: { silent?: boolean }) => Promise<boolean>;
+  retryProfileSetup: () => Promise<void>;
   clearAuthError: () => void;
   signOut: () => Promise<void>;
 }
@@ -108,7 +111,11 @@ function formatAuthError(error: unknown, fallback: string): string {
     case 'auth/user-not-found':
       return 'Invalid email or password. If you have not created an account yet, switch to Create Account or use Continue with Google.';
     case 'auth/too-many-requests':
-      return 'Too many attempts. Please wait a moment and try again.';
+      return 'Too many verification requests sent recently. Please wait 1–2 minutes and check your Inbox/Spam folder, or use Continue with Google.';
+    case 'auth/expired-action-code':
+      return 'That verification link has expired. Click Resend Verification Email below to get a fresh link.';
+    case 'auth/invalid-action-code':
+      return 'This verification link was already used or is invalid. Click "I\'ve Verified My Email — Continue" below.';
     case 'auth/popup-blocked':
       return 'Sign-in pop-up was blocked by your browser. Please allow pop-ups for this site and try again.';
     case 'auth/popup-closed-by-user':
@@ -118,16 +125,40 @@ function formatAuthError(error: unknown, fallback: string): string {
   }
 }
 
+async function sendVerificationEmailWithFallback(targetUser: User): Promise<void> {
+  if (typeof window !== 'undefined' && window.location.origin) {
+    try {
+      await sendEmailVerification(targetUser, {
+        url: window.location.origin,
+        handleCodeInApp: false,
+      });
+      return;
+    } catch (err) {
+      const code = getAuthErrorCode(err);
+      if (
+        code !== 'auth/unauthorized-continue-uri' &&
+        code !== 'auth/invalid-continue-uri' &&
+        code !== 'auth/missing-continue-uri'
+      ) {
+        throw err;
+      }
+    }
+  }
+  await sendEmailVerification(targetUser);
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [emailVerified, setEmailVerified] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [activeViewRole, setActiveViewRole] = useState<UserRole>('sales');
   const unsubProfileRef = useRef<(() => void) | undefined>(undefined);
+  const bootstrappingUidRef = useRef<string | null>(null);
 
   const clearProfileSub = useCallback(() => {
     if (unsubProfileRef.current) {
@@ -142,9 +173,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (!firebaseUser.emailVerified) {
         setProfile(null);
+        setEmailVerified(false);
         setAuthReady(true);
         return;
       }
+
+      setEmailVerified(true);
+      bootstrappingUidRef.current = firebaseUser.uid;
 
       const userRef = doc(db, 'users', firebaseUser.uid);
       const isBootAdmin =
@@ -152,6 +187,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         firebaseUser.emailVerified;
 
       try {
+        // Ensure the latest email_verified claim is minted on the Firestore ID token
+        await firebaseUser.getIdToken(true);
         const snap = await getDoc(userRef);
         if (!snap.exists()) {
           const normalizedEmail = (firebaseUser.email || '').trim().toLowerCase();
@@ -209,7 +246,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
               role: matchedInvite.role,
               department: matchedInvite.department,
               status: 'active',
-              commissionRatePct: matchedInvite.commissionRatePct,
+              commissionRatePct:
+                matchedInvite.role === 'sales' ? matchedInvite.commissionRatePct : 0,
               inviteId: matchedInvite.id,
               adminUids,
               createdAt: serverTimestamp(),
@@ -269,6 +307,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       } catch (error) {
         console.error('Profile bootstrap error:', error);
+        setAuthError(
+          error instanceof Error
+            ? `Workspace profile setup failed: ${error.message}`
+            : 'Workspace profile setup failed. Please click Retry Setup.'
+        );
+      } finally {
+        bootstrappingUidRef.current = null;
       }
 
       unsubProfileRef.current = onSnapshot(
@@ -295,10 +340,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     [clearProfileSub]
   );
 
+  // Handle inbound ?mode=verifyEmail&oobCode=... links if redirected back into the app
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get('mode');
+    const oobCode = params.get('oobCode');
+    if (mode !== 'verifyEmail' || !oobCode) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        await applyActionCode(auth, oobCode);
+        if (cancelled) return;
+        const cleanUrl = `${window.location.pathname}${window.location.hash || ''}`;
+        window.history.replaceState({}, '', cleanUrl);
+        if (auth.currentUser) {
+          await auth.currentUser.reload();
+          await auth.currentUser.getIdToken(true);
+          setUser(auth.currentUser);
+          setEmailVerified(Boolean(auth.currentUser.emailVerified));
+          if (auth.currentUser.emailVerified) {
+            await bootstrapAndSubscribeProfile(auth.currentUser);
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setAuthError(
+            formatAuthError(err, 'Unable to complete email verification link.')
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapAndSubscribeProfile]);
+
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       clearProfileSub();
       setUser(firebaseUser);
+      setEmailVerified(Boolean(firebaseUser?.emailVerified));
 
       if (!firebaseUser) {
         setProfile(null);
@@ -314,6 +398,74 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       clearProfileSub();
     };
   }, [bootstrapAndSubscribeProfile, clearProfileSub]);
+
+  const refreshVerificationStatus = useCallback(
+    async (options?: { silent?: boolean }): Promise<boolean> => {
+      const current = auth.currentUser;
+      if (!current) return false;
+      if (!options?.silent) {
+        setAuthError(null);
+      }
+      try {
+        await current.reload();
+        const reloaded = auth.currentUser;
+        if (!reloaded) return false;
+
+        if (reloaded.emailVerified) {
+          await reloaded.getIdToken(true);
+          setUser(reloaded);
+          setEmailVerified(true);
+          setAuthError(null);
+          if (bootstrappingUidRef.current !== reloaded.uid) {
+            await bootstrapAndSubscribeProfile(reloaded);
+          }
+          return true;
+        }
+
+        setUser(reloaded);
+        setEmailVerified(false);
+        if (!options?.silent) {
+          setAuthError(
+            'Email is not verified yet. Open the verification email in your inbox or Spam/Junk folder, click the link, then click Continue again.'
+          );
+        }
+        return false;
+      } catch (error) {
+        if (!options?.silent) {
+          setAuthError(
+            formatAuthError(error, 'Unable to check verification status.')
+          );
+        }
+        return false;
+      }
+    },
+    [bootstrapAndSubscribeProfile]
+  );
+
+  // Auto-check email verification when returning to tab or while waiting on the Verify Email screen
+  useEffect(() => {
+    if (!user || emailVerified) return;
+
+    const handleFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshVerificationStatus({ silent: true });
+      }
+    };
+
+    window.addEventListener('focus', handleFocusOrVisible);
+    document.addEventListener('visibilitychange', handleFocusOrVisible);
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshVerificationStatus({ silent: true });
+      }
+    }, 3500);
+
+    return () => {
+      window.removeEventListener('focus', handleFocusOrVisible);
+      document.removeEventListener('visibilitychange', handleFocusOrVisible);
+      window.clearInterval(intervalId);
+    };
+  }, [user, emailVerified, refreshVerificationStatus]);
 
   const signInWithGoogle = async () => {
     setSigningIn(true);
@@ -336,7 +488,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setSigningIn(true);
     setAuthError(null);
     try {
-      await signInWithEmailAndPassword(auth, cleanEmail, passwordInput);
+      const cred = await signInWithEmailAndPassword(auth, cleanEmail, passwordInput);
+      // Automatically send a fresh verification link if an unverified user signs back in
+      if (!cred.user.emailVerified) {
+        try {
+          await sendVerificationEmailWithFallback(cred.user);
+        } catch {
+          // User can still click Resend Link on the verification screen
+        }
+      }
     } catch (error) {
       setAuthError(formatAuthError(error, 'Unable to sign in with email.'));
     } finally {
@@ -366,8 +526,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         passwordInput
       );
       await updateProfile(cred.user, { displayName: cleanName.slice(0, 120) });
-      await sendEmailVerification(cred.user);
-      setUser(auth.currentUser);
+      setUser(auth.currentUser || cred.user);
+      setEmailVerified(Boolean(cred.user.emailVerified));
+
+      try {
+        await sendVerificationEmailWithFallback(cred.user);
+      } catch (verifyErr) {
+        setAuthError(
+          formatAuthError(
+            verifyErr,
+            'Account created, but we could not send the verification email yet. Click Resend Link below.'
+          )
+        );
+      }
       return true;
     } catch (error) {
       setAuthError(formatAuthError(error, 'Unable to create your account.'));
@@ -378,10 +549,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const resendVerificationEmail = async (): Promise<boolean> => {
-    if (!auth.currentUser) return false;
+    const target = auth.currentUser;
+    if (!target) return false;
     setAuthError(null);
     try {
-      await sendEmailVerification(auth.currentUser);
+      await target.reload();
+      if (target.emailVerified) {
+        await refreshVerificationStatus({ silent: true });
+        return true;
+      }
+      await sendVerificationEmailWithFallback(target);
       return true;
     } catch (error) {
       setAuthError(
@@ -391,28 +568,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const refreshVerificationStatus = async (): Promise<boolean> => {
-    if (!auth.currentUser) return false;
+  const retryProfileSetup = async () => {
+    if (!auth.currentUser) return;
     setAuthError(null);
-    try {
-      await auth.currentUser.reload();
-      await auth.currentUser.getIdToken(true);
-      const refreshed = auth.currentUser;
-      setUser(refreshed ? ({ ...refreshed } as User) : null);
-      if (refreshed && refreshed.emailVerified) {
-        await bootstrapAndSubscribeProfile(refreshed);
-        return true;
-      }
-      setAuthError(
-        'Email is not verified yet. Please click the verification link in your inbox (or spam folder), then click Continue again.'
-      );
-      return false;
-    } catch (error) {
-      setAuthError(
-        formatAuthError(error, 'Unable to check verification status.')
-      );
-      return false;
-    }
+    await auth.currentUser.reload();
+    await bootstrapAndSubscribeProfile(auth.currentUser);
   };
 
   const sendPasswordReset = async (emailInput: string): Promise<boolean> => {
@@ -438,6 +598,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const signOut = async () => {
     setAuthError(null);
     clearProfileSub();
+    setEmailVerified(false);
     await firebaseSignOut(auth);
   };
 
@@ -445,6 +606,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     <AuthContext.Provider
       value={{
         user,
+        emailVerified,
         profile,
         authReady,
         signingIn,
@@ -457,6 +619,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         sendPasswordReset,
         resendVerificationEmail,
         refreshVerificationStatus,
+        retryProfileSetup,
         clearAuthError,
         signOut,
       }}

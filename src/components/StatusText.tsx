@@ -16,7 +16,8 @@ export const StatusText: React.FC<StatusTextProps> = ({ status }) => {
     normalized === 'delivered' ||
     normalized === 'in stock' ||
     normalized === 'accepted' ||
-    normalized === 'reconciled'
+    normalized === 'reconciled' ||
+    normalized === 'fulfilled'
   ) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 whitespace-nowrap">
@@ -29,11 +30,13 @@ export const StatusText: React.FC<StatusTextProps> = ({ status }) => {
   if (
     normalized === 'overdue' ||
     normalized === 'declined' ||
+    normalized === 'rejected' ||
     normalized === 'cancelled' ||
     normalized === 'void' ||
     normalized === 'disabled' ||
     normalized === 'revoked' ||
     normalized === 'express' ||
+    normalized === 'critical' ||
     normalized === 'out of stock' ||
     normalized === 'disputed' ||
     normalized === 'damaged / rejected'
@@ -51,6 +54,7 @@ export const StatusText: React.FC<StatusTextProps> = ({ status }) => {
     normalized === 'quality control' ||
     normalized === 'part paid' ||
     normalized === 'pending' ||
+    normalized === 'submitted' ||
     normalized === 'invited' ||
     normalized === 'urgent' ||
     normalized === 'clocked in' ||

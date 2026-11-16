@@ -42,6 +42,11 @@ import {
   NoteTone,
   OperationalNote,
   PayrollRun,
+  Requisition,
+  RequisitionLine,
+  RequisitionPriority,
+  RequisitionStatus,
+  RequisitionType,
   SupplierInvoice,
   TimeEntry,
   UserInvite,
@@ -130,6 +135,7 @@ export function useErpData() {
   const [supplierInvoices, setSupplierInvoices] = useState<SupplierInvoice[]>([]);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [goodsReceipts, setGoodsReceipts] = useState<GoodsReceipt[]>([]);
+  const [requisitions, setRequisitions] = useState<Requisition[]>([]);
   const [cashBookEntries, setCashBookEntries] = useState<CashBookEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -304,6 +310,22 @@ export function useErpData() {
           );
         },
         (err) => handleFirestoreError(err, OperationType.LIST, 'goodsReceipts')
+      )
+    );
+
+    // Internal Requisitions (All active staff)
+    unsubs.push(
+      onSnapshot(
+        makeTeamQuery('requisitions'),
+        (snap) => {
+          setRequisitions(
+            snap.docs.map((d) => ({
+              id: d.id,
+              ...(d.data() as Omit<Requisition, 'id'>),
+            }))
+          );
+        },
+        (err) => handleFirestoreError(err, OperationType.LIST, 'requisitions')
       )
     );
 
@@ -581,7 +603,9 @@ export function useErpData() {
         status,
         updatedAt: serverTimestamp(),
       };
-      if (commissionRatePct !== undefined) {
+      if (role !== 'sales') {
+        updates.commissionRatePct = 0;
+      } else if (commissionRatePct !== undefined) {
         updates.commissionRatePct = Math.max(
           0,
           Math.min(50, round2(Number(commissionRatePct) || 0))
@@ -657,29 +681,42 @@ export function useErpData() {
       (Number(input.estimatedLaborCost) || 0) +
       (Number(input.estimatedSubcontractCost) || 0) +
       (Number(input.estimatedOverheadCost) || 0);
+    const rawSalesUid = trimStr(input.assignedSalesUid, 128);
+    const assignedRepProfile = rawSalesUid
+      ? users.find((u) => u.uid === rawSalesUid) ||
+        (profile?.uid === rawSalesUid ? profile : undefined)
+      : undefined;
+    const isSalesEligible = Boolean(
+      rawSalesUid && (!assignedRepProfile || assignedRepProfile.role === 'sales')
+    );
+
     const basis: CommissionBasis =
       input.commissionBasis || settings.defaultCommissionBasis || 'gross_profit';
-    const ratePct = Math.max(
-      0,
-      Math.min(
-        50,
-        round2(
-          Number(
-            input.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5
-          ) || 0
+    const ratePct = isSalesEligible
+      ? Math.max(
+          0,
+          Math.min(
+            50,
+            round2(
+              Number(
+                input.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5
+              ) || 0
+            )
+          )
         )
-      )
-    );
-    const activeCost = (input.actualCostTotal || 0) > 0 ? (input.actualCostTotal || 0) : estCostSum;
-    const computedComm =
-      input.commissionAmount !== undefined
+      : 0;
+    const activeCost =
+      (input.actualCostTotal || 0) > 0 ? input.actualCostTotal || 0 : estCostSum;
+    const computedComm = isSalesEligible
+      ? input.commissionAmount !== undefined
         ? round2(Math.max(0, Number(input.commissionAmount) || 0))
         : calculateJobCommission({
             netTotal: input.netTotal,
             grossProfit: input.netTotal - activeCost,
             commissionRatePct: ratePct,
             commissionBasis: basis,
-          });
+          })
+      : 0;
 
     try {
       const ref = await addDoc(collection(db, 'jobs'), {
@@ -711,8 +748,13 @@ export function useErpData() {
         estimatedSubcontractCost: Math.max(0, round2(input.estimatedSubcontractCost)),
         estimatedOverheadCost: Math.max(0, round2(input.estimatedOverheadCost)),
         actualCostTotal: Math.max(0, round2(input.actualCostTotal)),
-        assignedSalesUid: trimStr(input.assignedSalesUid, 128) || user.uid,
-        assignedSalesName: trimStr(input.assignedSalesName, 120),
+        assignedSalesUid: isSalesEligible ? rawSalesUid : '',
+        assignedSalesName: isSalesEligible
+          ? trimStr(
+              assignedRepProfile?.displayName || input.assignedSalesName,
+              120
+            )
+          : '',
         assignedProductionName: trimStr(input.assignedProductionName, 120),
         commissionRatePct: ratePct,
         commissionBasis: basis,
@@ -1803,6 +1845,274 @@ export function useErpData() {
     }
   };
 
+  const createRequisition = async (input: {
+    requisitionNumber: string;
+    requisitionDate: string;
+    neededByDate: string;
+    requisitionType: RequisitionType;
+    department: UserProfile['department'];
+    priority: RequisitionPriority;
+    jobId: string;
+    jobNumber: string;
+    preferredSupplier: string;
+    lines: RequisitionLine[];
+    justification: string;
+    status: 'Draft' | 'Submitted';
+  }) => {
+    if (!user || !profile) return;
+    const cleanLines: RequisitionLine[] = input.lines.slice(0, 10).map((line) => {
+      const qty = Math.max(0.01, round2(Number(line.quantity) || 1));
+      const unitCost = Math.max(0, round2(Number(line.estimatedUnitCost) || 0));
+      return {
+        inventoryItemId: trimStr(line.inventoryItemId, 128),
+        sku: trimStr(line.sku, 40),
+        description: trimStr(line.description, 200) || 'Requested Item',
+        quantity: qty,
+        unit: trimStr(line.unit, 32) || 'Pcs',
+        estimatedUnitCost: unitCost,
+        estimatedTotal: round2(qty * unitCost),
+      };
+    });
+    if (cleanLines.length === 0) return;
+    const totalEstimatedCost = round2(
+      cleanLines.reduce((acc, l) => acc + l.estimatedTotal, 0)
+    );
+    try {
+      const ref = await addDoc(collection(db, 'requisitions'), {
+        requisitionNumber: trimStr(input.requisitionNumber, 40),
+        requisitionDate: trimStr(input.requisitionDate, 32),
+        neededByDate: trimStr(input.neededByDate, 32),
+        requisitionType: input.requisitionType,
+        department: input.department || profile.department,
+        priority: input.priority,
+        jobId: trimStr(input.jobId, 128),
+        jobNumber: trimStr(input.jobNumber, 40),
+        preferredSupplier: trimStr(input.preferredSupplier, 160),
+        requestedByUid: user.uid,
+        requestedByName: trimStr(profile.displayName, 120) || 'Staff',
+        lines: cleanLines,
+        totalEstimatedCost,
+        justification: trimStr(input.justification, 1000),
+        status: input.status === 'Draft' ? 'Draft' : 'Submitted',
+        approvedByName: '',
+        approvedDate: '',
+        fulfillmentNotes: '',
+        linkedRef: '',
+        ownerUid: user.uid,
+        staffUids: activeStaffUids,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return ref.id;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'requisitions');
+    }
+  };
+
+  const updateRequisition = async (
+    reqId: string,
+    updates: Partial<{
+      requisitionDate: string;
+      neededByDate: string;
+      requisitionType: RequisitionType;
+      department: UserProfile['department'];
+      priority: RequisitionPriority;
+      jobId: string;
+      jobNumber: string;
+      preferredSupplier: string;
+      lines: RequisitionLine[];
+      justification: string;
+      status: Extract<RequisitionStatus, 'Draft' | 'Submitted'>;
+    }>
+  ) => {
+    try {
+      const clean: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (updates.requisitionDate !== undefined)
+        clean.requisitionDate = trimStr(updates.requisitionDate, 32);
+      if (updates.neededByDate !== undefined)
+        clean.neededByDate = trimStr(updates.neededByDate, 32);
+      if (updates.requisitionType !== undefined)
+        clean.requisitionType = updates.requisitionType;
+      if (updates.department !== undefined) clean.department = updates.department;
+      if (updates.priority !== undefined) clean.priority = updates.priority;
+      if (updates.jobId !== undefined) clean.jobId = trimStr(updates.jobId, 128);
+      if (updates.jobNumber !== undefined)
+        clean.jobNumber = trimStr(updates.jobNumber, 40);
+      if (updates.preferredSupplier !== undefined)
+        clean.preferredSupplier = trimStr(updates.preferredSupplier, 160);
+      if (updates.justification !== undefined)
+        clean.justification = trimStr(updates.justification, 1000);
+      if (updates.status !== undefined) clean.status = updates.status;
+      if (updates.lines !== undefined && updates.lines.length > 0) {
+        const cleanLines: RequisitionLine[] = updates.lines
+          .slice(0, 10)
+          .map((line) => {
+            const qty = Math.max(0.01, round2(Number(line.quantity) || 1));
+            const unitCost = Math.max(
+              0,
+              round2(Number(line.estimatedUnitCost) || 0)
+            );
+            return {
+              inventoryItemId: trimStr(line.inventoryItemId, 128),
+              sku: trimStr(line.sku, 40),
+              description: trimStr(line.description, 200) || 'Requested Item',
+              quantity: qty,
+              unit: trimStr(line.unit, 32) || 'Pcs',
+              estimatedUnitCost: unitCost,
+              estimatedTotal: round2(qty * unitCost),
+            };
+          });
+        clean.lines = cleanLines;
+        clean.totalEstimatedCost = round2(
+          cleanLines.reduce((acc, l) => acc + l.estimatedTotal, 0)
+        );
+      }
+      await updateDoc(doc(db, 'requisitions', reqId), clean);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `requisitions/${reqId}`);
+    }
+  };
+
+  const reviewRequisition = async (
+    req: Requisition,
+    decision: 'Approved' | 'Rejected',
+    notes?: string
+  ) => {
+    if (!profile) return;
+    try {
+      await updateDoc(doc(db, 'requisitions', req.id), {
+        status: decision,
+        approvedByName: trimStr(profile.displayName, 120) || 'Management',
+        approvedDate: new Date().toISOString().slice(0, 10),
+        fulfillmentNotes: trimStr(notes, 500),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `requisitions/${req.id}`);
+    }
+  };
+
+  const fulfillRequisition = async (
+    req: Requisition,
+    options?: {
+      linkedRef?: string;
+      fulfillmentNotes?: string;
+      issueFromInventory?: boolean;
+      postToCashBook?: boolean;
+      cashBookAccount?: string;
+      cashDisbursedAmount?: number;
+    }
+  ) => {
+    if (!user || !profile) return;
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'requisitions', req.id), {
+        status: 'Fulfilled',
+        linkedRef: trimStr(options?.linkedRef, 80),
+        fulfillmentNotes: trimStr(options?.fulfillmentNotes, 500),
+        updatedAt: serverTimestamp(),
+      });
+
+      if (
+        options?.issueFromInventory &&
+        req.requisitionType === 'Stock / Material Issue'
+      ) {
+        const qtyByItemId = new Map<string, number>();
+        req.lines.forEach((line) => {
+          if (line.inventoryItemId && line.quantity > 0) {
+            qtyByItemId.set(
+              line.inventoryItemId,
+              round2((qtyByItemId.get(line.inventoryItemId) || 0) + line.quantity)
+            );
+          }
+        });
+        qtyByItemId.forEach((issueQty, itemId) => {
+          const item = inventoryItems.find((i) => i.id === itemId);
+          if (!item || issueQty <= 0) return;
+          const nextQty = Math.max(0, round2(item.quantityOnHand - issueQty));
+          const actualDelta = round2(nextQty - item.quantityOnHand);
+          if (actualDelta === 0) return;
+          batch.update(doc(db, 'inventoryItems', item.id), {
+            quantityOnHand: nextQty,
+            status: deriveStockStatus(nextQty, item.reorderLevel),
+            updatedAt: serverTimestamp(),
+          });
+          const movRef = doc(collection(db, `inventoryItems/${item.id}/movements`));
+          batch.set(movRef, {
+            itemId: item.id,
+            movementType: 'Issue to Job',
+            quantityDelta: actualDelta,
+            resultingQty: nextQty,
+            jobId: trimStr(req.jobId, 128),
+            jobNumber: trimStr(req.jobNumber, 40),
+            recipientOrReason: trimStr(
+              `${req.requisitionNumber} issued to ${req.requestedByName}`,
+              240
+            ),
+            loggedByName: trimStr(profile.displayName, 120) || 'Stores',
+            ownerUid: user.uid,
+            staffUids: activeStaffUids,
+            createdAt: serverTimestamp(),
+          });
+        });
+      }
+
+      if (
+        options?.postToCashBook &&
+        isAccountsOrMgmt &&
+        req.requisitionType === 'Petty Cash / Expense'
+      ) {
+        const payAmount = round2(
+          Number(options.cashDisbursedAmount ?? req.totalEstimatedCost) || 0
+        );
+        if (payAmount > 0) {
+          const chosenAcc =
+            (options.cashBookAccount && options.cashBookAccount.trim()) ||
+            'Petty Cash Float';
+          const cbRef = doc(collection(db, 'cashBookEntries'));
+          batch.set(cbRef, {
+            entryNumber: `CB-${new Date().getFullYear()}-${String(
+              1 + cashBookEntries.length
+            ).padStart(3, '0')}`,
+            entryDate: new Date().toISOString().slice(0, 10),
+            entryType: 'Payment (Outflow)',
+            account: chosenAcc,
+            counterparty: trimStr(req.requestedByName, 160) || 'Staff',
+            category: 'Workshop Petty Cash',
+            reference:
+              trimStr(options.linkedRef, 120) || trimStr(req.requisitionNumber, 120),
+            linkedDocRef: trimStr(req.requisitionNumber, 80),
+            amount: payAmount,
+            reconciled: false,
+            recordedByName: trimStr(profile.displayName, 120) || 'Accounts',
+            notes: trimStr(
+              `Petty cash disbursed for ${req.requisitionNumber}${
+                req.jobNumber ? ` (${req.jobNumber})` : ''
+              }`,
+              500
+            ),
+            ownerUid: user.uid,
+            viewerUids: hrViewerUids,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `requisitions/${req.id}`);
+    }
+  };
+
+  const deleteRequisition = async (reqId: string) => {
+    try {
+      await deleteDoc(doc(db, 'requisitions', reqId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `requisitions/${reqId}`);
+    }
+  };
+
   const createCashBookEntry = async (
     input: Omit<
       CashBookEntry,
@@ -2151,10 +2461,10 @@ export function useErpData() {
         displayName: trimStr(input.displayName, 120) || normalizedEmail,
         role: input.role,
         department: input.department,
-        commissionRatePct: Math.max(
-          0,
-          Math.min(50, round2(Number(input.commissionRatePct) || 0))
-        ),
+        commissionRatePct:
+          input.role === 'sales'
+            ? Math.max(0, Math.min(50, round2(Number(input.commissionRatePct) || 0)))
+            : 0,
         status: 'invited',
         invitedByName: trimStr(profile.displayName, 120) || 'Management',
         acceptedUid: '',
@@ -2205,19 +2515,42 @@ export function useErpData() {
   ) => {
     try {
       const clean: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      const existingJob = jobs.find((j) => j.id === jobId);
+      const effectiveSalesUid =
+        updates.assignedSalesUid !== undefined
+          ? trimStr(updates.assignedSalesUid, 128)
+          : existingJob?.assignedSalesUid || '';
+      const assignedRep = effectiveSalesUid
+        ? users.find((u) => u.uid === effectiveSalesUid) ||
+          (profile?.uid === effectiveSalesUid ? profile : undefined)
+        : undefined;
+      const isSalesEligible = Boolean(
+        effectiveSalesUid && (!assignedRep || assignedRep.role === 'sales')
+      );
+
       if (updates.assignedSalesUid !== undefined)
-        clean.assignedSalesUid = trimStr(updates.assignedSalesUid, 128);
+        clean.assignedSalesUid = isSalesEligible ? effectiveSalesUid : '';
       if (updates.assignedSalesName !== undefined)
-        clean.assignedSalesName = trimStr(updates.assignedSalesName, 120);
-      if (updates.commissionRatePct !== undefined)
-        clean.commissionRatePct = Math.max(
-          0,
-          Math.min(50, round2(Number(updates.commissionRatePct) || 0))
-        );
+        clean.assignedSalesName = isSalesEligible
+          ? trimStr(assignedRep?.displayName || updates.assignedSalesName, 120)
+          : '';
+      if (!isSalesEligible) {
+        clean.commissionRatePct = 0;
+        clean.commissionAmount = 0;
+      } else {
+        if (updates.commissionRatePct !== undefined)
+          clean.commissionRatePct = Math.max(
+            0,
+            Math.min(50, round2(Number(updates.commissionRatePct) || 0))
+          );
+        if (updates.commissionAmount !== undefined)
+          clean.commissionAmount = Math.max(
+            0,
+            round2(Number(updates.commissionAmount) || 0)
+          );
+      }
       if (updates.commissionBasis !== undefined)
         clean.commissionBasis = updates.commissionBasis;
-      if (updates.commissionAmount !== undefined)
-        clean.commissionAmount = Math.max(0, round2(Number(updates.commissionAmount) || 0));
       if (updates.commissionStatus !== undefined)
         clean.commissionStatus = updates.commissionStatus;
       if (updates.commissionPaidDate !== undefined)
@@ -2282,6 +2615,14 @@ export function useErpData() {
     const today = new Date().toISOString().slice(0, 10);
     const in5Days = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
     const in10Days = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+    const sampleSalesRep =
+      users.find((u) => u.status === 'active' && u.role === 'sales') ||
+      (profile.role === 'sales' ? profile : null);
+    const sampleSalesUid = sampleSalesRep ? sampleSalesRep.uid : '';
+    const sampleSalesName = sampleSalesRep ? sampleSalesRep.displayName : '';
+    const sampleCommRate = sampleSalesRep
+      ? sampleSalesRep.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5
+      : 0;
 
     try {
       const batch = writeBatch(db);
@@ -2501,12 +2842,15 @@ export function useErpData() {
         estimatedSubcontractCost: 0,
         estimatedOverheadCost: 95,
         actualCostTotal: 742,
-        assignedSalesUid: user.uid,
-        assignedSalesName: profile.displayName,
+        assignedSalesUid: sampleSalesUid,
+        assignedSalesName: sampleSalesName,
         assignedProductionName: 'Farai Mutasa',
-        commissionRatePct: 5,
+        commissionRatePct: sampleCommRate,
         commissionBasis: 'gross_profit',
-        commissionAmount: round2(Math.max(0, j1Vat.netAmount - 742) * 0.05),
+        commissionAmount:
+          sampleCommRate > 0
+            ? round2((Math.max(0, j1Vat.netAmount - 742) * sampleCommRate) / 100)
+            : 0,
         commissionStatus: 'Pending',
         commissionPaidDate: '',
         ownerUid: user.uid,
@@ -2557,12 +2901,15 @@ export function useErpData() {
         estimatedSubcontractCost: 0,
         estimatedOverheadCost: 140,
         actualCostTotal: 1915,
-        assignedSalesUid: user.uid,
-        assignedSalesName: profile.displayName,
+        assignedSalesUid: sampleSalesUid,
+        assignedSalesName: sampleSalesName,
         assignedProductionName: 'Chipo Nyathi',
-        commissionRatePct: 5,
+        commissionRatePct: sampleCommRate,
         commissionBasis: 'gross_profit',
-        commissionAmount: round2(Math.max(0, j2Vat.netAmount - 1915) * 0.05),
+        commissionAmount:
+          sampleCommRate > 0
+            ? round2((Math.max(0, j2Vat.netAmount - 1915) * sampleCommRate) / 100)
+            : 0,
         commissionStatus: 'Pending',
         commissionPaidDate: '',
         ownerUid: user.uid,
@@ -2613,13 +2960,16 @@ export function useErpData() {
         estimatedSubcontractCost: 65,
         estimatedOverheadCost: 70,
         actualCostTotal: 842,
-        assignedSalesUid: user.uid,
-        assignedSalesName: profile.displayName,
+        assignedSalesUid: sampleSalesUid,
+        assignedSalesName: sampleSalesName,
         assignedProductionName: 'Kudakwashe Sibanda',
-        commissionRatePct: 5,
+        commissionRatePct: sampleCommRate,
         commissionBasis: 'gross_profit',
-        commissionAmount: round2(Math.max(0, j3Vat.netAmount - 842) * 0.05),
-        commissionStatus: 'Earned',
+        commissionAmount:
+          sampleCommRate > 0
+            ? round2((Math.max(0, j3Vat.netAmount - 842) * sampleCommRate) / 100)
+            : 0,
+        commissionStatus: sampleSalesRep ? 'Earned' : 'Pending',
         commissionPaidDate: '',
         ownerUid: user.uid,
         staffUids,
@@ -2669,14 +3019,18 @@ export function useErpData() {
         estimatedSubcontractCost: 0,
         estimatedOverheadCost: 80,
         actualCostTotal: 0,
-        assignedSalesUid: user.uid,
-        assignedSalesName: profile.displayName,
+        assignedSalesUid: sampleSalesUid,
+        assignedSalesName: sampleSalesName,
         assignedProductionName: 'Kudakwashe Sibanda',
-        commissionRatePct: 5,
+        commissionRatePct: sampleCommRate,
         commissionBasis: 'gross_profit',
-        commissionAmount: round2(
-          Math.max(0, j4Vat.netAmount - (720 + 220 + 80)) * 0.05
-        ),
+        commissionAmount:
+          sampleCommRate > 0
+            ? round2(
+                (Math.max(0, j4Vat.netAmount - (720 + 220 + 80)) * sampleCommRate) /
+                  100
+              )
+            : 0,
         commissionStatus: 'Pending',
         commissionPaidDate: '',
         ownerUid: user.uid,
@@ -3445,6 +3799,7 @@ export function useErpData() {
     supplierInvoices,
     inventoryItems,
     goodsReceipts,
+    requisitions,
     cashBookEntries,
     employees,
     timeEntries,
@@ -3486,6 +3841,11 @@ export function useErpData() {
     createGoodsReceipt,
     updateGoodsReceipt,
     deleteGoodsReceipt,
+    createRequisition,
+    updateRequisition,
+    reviewRequisition,
+    fulfillRequisition,
+    deleteRequisition,
     createCashBookEntry,
     toggleCashBookReconciled,
     deleteCashBookEntry,

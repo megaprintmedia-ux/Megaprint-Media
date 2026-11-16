@@ -9,6 +9,7 @@ import {
   JobCostEntry,
   JobStatus,
   ProductionChecklist,
+  UserProfile,
   UserRole,
 } from '../types/erp';
 import {
@@ -23,6 +24,7 @@ interface JobCardModalProps {
   job: Job;
   settings: CompanySettings;
   role: UserRole;
+  users?: UserProfile[];
   onClose: () => void;
   onUpdateJob: (
     jobId: string,
@@ -78,6 +80,7 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
   job,
   settings,
   role,
+  users = [],
   onClose,
   onUpdateJob,
   onUpdateJobCommission,
@@ -516,84 +519,112 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                   </div>
 
                   {/* Sales Rep & Commission Trace */}
-                  <div className="mt-3 border border-slate-200 rounded-md p-3.5 space-y-2.5">
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <span className="font-semibold text-slate-900">
-                        Sales Commission Trace · {job.assignedSalesName || 'Unassigned'}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono-nums font-bold text-blue-700">
-                          {formatMoney(job.commissionAmount || 0, settings.currency)}
-                        </span>
-                        <StatusText status={job.commissionStatus || 'Pending'} />
-                      </div>
-                    </div>
-                    {(role === 'management' || role === 'accounts') &&
-                      onUpdateJobCommission &&
-                      !isTerminal && (
-                        <div className="flex flex-wrap items-center gap-2 pt-1 no-print">
-                          <div className="flex items-center gap-1 text-xs">
-                            <span className="text-slate-500">Rate %</span>
-                            <input
-                              type="number"
-                              min="0"
-                              max="50"
-                              step="0.5"
-                              value={commRateInput}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setCommRateInput(val);
-                                const nextAmt = calculateJobCommission({
-                                  netTotal: job.netTotal,
-                                  grossProfit: costing.grossProfit,
-                                  commissionRatePct: Number(val) || 0,
-                                  commissionBasis: commBasisInput,
-                                });
-                                setCommAmountInput(String(nextAmt));
-                              }}
-                              className="w-16 border border-slate-200 rounded px-2 py-1 text-xs font-mono-nums"
-                            />
+                  {(() => {
+                    const assignedRepUser = job.assignedSalesUid
+                      ? users.find((u) => u.uid === job.assignedSalesUid)
+                      : undefined;
+                    const isSalesRepEligible = Boolean(
+                      job.assignedSalesUid &&
+                        (!assignedRepUser || assignedRepUser.role === 'sales')
+                    );
+
+                    return (
+                      <div className="mt-3 border border-slate-200 rounded-md p-3.5 space-y-2.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <span className="font-semibold text-slate-900">
+                            Sales Commission Trace ·{' '}
+                            {isSalesRepEligible
+                              ? job.assignedSalesName || 'Sales Rep'
+                              : 'No Sales Rep Assigned (Sales Team Only)'}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono-nums font-bold text-blue-700">
+                              {formatMoney(
+                                isSalesRepEligible ? job.commissionAmount || 0 : 0,
+                                settings.currency
+                              )}
+                            </span>
+                            {isSalesRepEligible && (
+                              <StatusText status={job.commissionStatus || 'Pending'} />
+                            )}
                           </div>
-                          <select
-                            value={commBasisInput}
-                            onChange={(e) => {
-                              const nextBasis = e.target.value as CommissionBasis;
-                              setCommBasisInput(nextBasis);
-                              const nextAmt = calculateJobCommission({
-                                netTotal: job.netTotal,
-                                grossProfit: costing.grossProfit,
-                                commissionRatePct: Number(commRateInput) || 0,
-                                commissionBasis: nextBasis,
-                              });
-                              setCommAmountInput(String(nextAmt));
-                            }}
-                            className="border border-slate-200 rounded px-2 py-1 text-xs bg-white"
-                          >
-                            <option value="gross_profit">% of Job Net Profit</option>
-                            <option value="net_sales">% of Net Sales</option>
-                          </select>
-                          <div className="flex items-center gap-1 text-xs">
-                            <span className="text-slate-500">Amount</span>
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={commAmountInput}
-                              onChange={(e) => setCommAmountInput(e.target.value)}
-                              className="w-24 border border-slate-200 rounded px-2 py-1 text-xs font-mono-nums"
-                            />
-                          </div>
-                          <button
-                            type="button"
-                            onClick={handleSaveCommission}
-                            disabled={savingComm}
-                            className="px-2.5 py-1 rounded bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 disabled:opacity-50"
-                          >
-                            {savingComm ? 'Updating...' : 'Update Commission'}
-                          </button>
                         </div>
-                      )}
-                  </div>
+                        {!isSalesRepEligible && (
+                          <p className="text-[11px] text-slate-500">
+                            Commissions apply exclusively to Sales &amp; Marketing team
+                            members. Assign a Sales rep under Team &amp; Settings →
+                            Commissions &amp; Rules to enable commission on this job.
+                          </p>
+                        )}
+                        {isSalesRepEligible &&
+                          (role === 'management' || role === 'accounts') &&
+                          onUpdateJobCommission &&
+                          !isTerminal && (
+                            <div className="flex flex-wrap items-center gap-2 pt-1 no-print">
+                              <div className="flex items-center gap-1 text-xs">
+                                <span className="text-slate-500">Rate %</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="50"
+                                  step="0.5"
+                                  value={commRateInput}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setCommRateInput(val);
+                                    const nextAmt = calculateJobCommission({
+                                      netTotal: job.netTotal,
+                                      grossProfit: costing.grossProfit,
+                                      commissionRatePct: Number(val) || 0,
+                                      commissionBasis: commBasisInput,
+                                    });
+                                    setCommAmountInput(String(nextAmt));
+                                  }}
+                                  className="w-16 border border-slate-200 rounded px-2 py-1 text-xs font-mono-nums"
+                                />
+                              </div>
+                              <select
+                                value={commBasisInput}
+                                onChange={(e) => {
+                                  const nextBasis = e.target.value as CommissionBasis;
+                                  setCommBasisInput(nextBasis);
+                                  const nextAmt = calculateJobCommission({
+                                    netTotal: job.netTotal,
+                                    grossProfit: costing.grossProfit,
+                                    commissionRatePct: Number(commRateInput) || 0,
+                                    commissionBasis: nextBasis,
+                                  });
+                                  setCommAmountInput(String(nextAmt));
+                                }}
+                                className="border border-slate-200 rounded px-2 py-1 text-xs bg-white"
+                              >
+                                <option value="gross_profit">% of Job Net Profit</option>
+                                <option value="net_sales">% of Net Sales</option>
+                              </select>
+                              <div className="flex items-center gap-1 text-xs">
+                                <span className="text-slate-500">Amount</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={commAmountInput}
+                                  onChange={(e) => setCommAmountInput(e.target.value)}
+                                  className="w-24 border border-slate-200 rounded px-2 py-1 text-xs font-mono-nums"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleSaveCommission}
+                                disabled={savingComm}
+                                className="px-2.5 py-1 rounded bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 disabled:opacity-50"
+                              >
+                                {savingComm ? 'Updating...' : 'Update Commission'}
+                              </button>
+                            </div>
+                          )}
+                      </div>
+                    );
+                  })()}
                 </div>
               ) : (
                 <div className="border border-slate-200 rounded-md p-4 bg-slate-50 text-xs text-slate-600">

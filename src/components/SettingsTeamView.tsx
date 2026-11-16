@@ -432,8 +432,12 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
     }
   };
 
+  const salesTeamUsers = useMemo(() => {
+    return users.filter((u) => u.role === 'sales');
+  }, [users]);
+
   const activeSalesMembers = useMemo(() => {
-    return users.filter((u) => u.status === 'active');
+    return users.filter((u) => u.status === 'active' && u.role === 'sales');
   }, [users]);
 
   const filteredCommissionJobs = useMemo(() => {
@@ -453,19 +457,22 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
   const handleSaveManualJobCommission = async (job: Job) => {
     const draft = jobCommDrafts[job.id];
     if (!draft) return;
-    const chosenUser = users.find((u) => u.uid === draft.repUid);
-    const rate = Math.max(0, Math.min(50, Number(draft.ratePct) || 0));
-    const amt = Math.max(0, Number(draft.amount) || 0);
+    const chosenSalesUser = activeSalesMembers.find((u) => u.uid === draft.repUid);
+    const isSalesAssigned = Boolean(chosenSalesUser);
+    const rate = isSalesAssigned
+      ? Math.max(0, Math.min(50, Number(draft.ratePct) || 0))
+      : 0;
+    const amt = isSalesAssigned ? Math.max(0, Number(draft.amount) || 0) : 0;
     setSavingJobCommId(job.id);
     setSavedJobCommId(null);
     try {
       await onUpdateJobCommission(job.id, {
-        assignedSalesUid: draft.repUid,
-        assignedSalesName: chosenUser?.displayName ?? job.assignedSalesName,
+        assignedSalesUid: chosenSalesUser ? chosenSalesUser.uid : '',
+        assignedSalesName: chosenSalesUser ? chosenSalesUser.displayName : '',
         commissionBasis: draft.basis,
         commissionRatePct: rate,
         commissionAmount: amt,
-        commissionStatus: draft.status,
+        commissionStatus: isSalesAssigned ? draft.status : 'Pending',
       });
       setSavedJobCommId(job.id);
     } finally {
@@ -947,12 +954,12 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-4">
               <div>
                 <h2 className="font-display text-sm font-bold text-slate-900">
-                  Global Commission Policy &amp; Default Rule
+                  Sales Team Commission Policy &amp; Default Rule
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Sets the default calculation basis and rate for new jobs. By default,
-                  commission is calculated on the <strong>Net Profit of the Job</strong>{' '}
-                  (Net Sales Excl. VAT minus job costs).
+                  Commissions apply <strong>only to Sales &amp; Marketing team members</strong>.
+                  By default, commission is calculated on the{' '}
+                  <strong>Net Profit of the Job</strong> (Net Sales Excl. VAT minus job costs).
                 </p>
               </div>
               <span className="text-xs font-mono-nums font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-3 py-1 rounded-md shrink-0">
@@ -1013,29 +1020,30 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
             </div>
           </form>
 
-          {/* Per-Staff Default Commission Rates */}
+          {/* Per-Staff Default Commission Rates (Sales Team Only) */}
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
               <h3 className="font-display text-sm font-bold text-slate-900">
-                Sales &amp; Team Member Default Rates ({users.length})
+                Sales Team Default Commission Rates ({salesTeamUsers.length})
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Configure individual default commission percentages applied when a job is
-                assigned to each member.
+                Only Sales &amp; Marketing team members are eligible for job commissions.
+                Management, Accounts, and Production roles are excluded.
               </p>
             </div>
-            {users.length === 0 ? (
+            {salesTeamUsers.length === 0 ? (
               <div className="p-6 text-center text-xs text-slate-500">
-                No staff profiles registered yet.
+                No Sales &amp; Marketing team members registered yet. Assign a user to
+                Sales &amp; Marketing under Team, Invites &amp; Access to set their
+                commission rate.
               </div>
             ) : (
               <div className="divide-y divide-slate-100">
-                {users.map((u) => {
+                {salesTeamUsers.map((u) => {
                   const commVal =
                     commDrafts[u.uid] ??
                     String(
-                      u.commissionRatePct ??
-                        (u.role === 'sales' ? settings.defaultCommissionRatePct ?? 5 : 0)
+                      u.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5
                     );
                   return (
                     <div
@@ -1146,12 +1154,17 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                         amount: String(job.commissionAmount ?? 0),
                         status: (job.commissionStatus || 'Pending') as CommissionStatus,
                       };
-                      const formulaAmount = calculateJobCommission({
-                        netTotal: job.netTotal,
-                        grossProfit: costing.grossProfit,
-                        commissionRatePct: Number(draft.ratePct) || 0,
-                        commissionBasis: draft.basis,
-                      });
+                      const isSalesRepSelected = activeSalesMembers.some(
+                        (u) => u.uid === draft.repUid
+                      );
+                      const formulaAmount = isSalesRepSelected
+                        ? calculateJobCommission({
+                            netTotal: job.netTotal,
+                            grossProfit: costing.grossProfit,
+                            commissionRatePct: Number(draft.ratePct) || 0,
+                            commissionBasis: draft.basis,
+                          })
+                        : 0;
 
                       return (
                         <tr key={job.id} className="hover:bg-slate-50/60">
@@ -1182,16 +1195,29 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                           </td>
                           <td className="py-3 px-4 align-top">
                             <select
-                              value={draft.repUid}
+                              value={isSalesRepSelected ? draft.repUid : ''}
                               onChange={(e) => {
                                 const repUid = e.target.value;
+                                if (!repUid) {
+                                  setJobCommDrafts((prev) => ({
+                                    ...prev,
+                                    [job.id]: {
+                                      ...draft,
+                                      repUid: '',
+                                      ratePct: '0',
+                                      amount: '0',
+                                    },
+                                  }));
+                                  return;
+                                }
                                 const rep = activeSalesMembers.find(
                                   (u) => u.uid === repUid
                                 );
-                                const nextRate =
-                                  rep?.commissionRatePct !== undefined
-                                    ? String(rep.commissionRatePct)
-                                    : draft.ratePct;
+                                const nextRate = String(
+                                  rep?.commissionRatePct ??
+                                    settings.defaultCommissionRatePct ??
+                                    5
+                                );
                                 const recalc = calculateJobCommission({
                                   netTotal: job.netTotal,
                                   grossProfit: costing.grossProfit,
@@ -1208,26 +1234,26 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                   },
                                 }));
                               }}
-                              className="border border-slate-200 rounded px-2 py-1 text-xs bg-white max-w-[150px]"
+                              className="border border-slate-200 rounded px-2 py-1 text-xs bg-white max-w-[165px]"
                             >
-                              {!activeSalesMembers.some(
-                                (u) => u.uid === draft.repUid
-                              ) && (
-                                <option value={draft.repUid}>
-                                  {job.assignedSalesName || 'Unassigned'}
-                                </option>
-                              )}
+                              <option value="">Unassigned (0% Comm.)</option>
                               {activeSalesMembers.map((u) => (
                                 <option key={u.uid} value={u.uid}>
                                   {u.displayName}
                                 </option>
                               ))}
                             </select>
+                            {!isSalesRepSelected && job.assignedSalesName && (
+                              <div className="text-[10px] text-amber-700 mt-0.5">
+                                Was: {job.assignedSalesName} (Non-sales · Save to clear)
+                              </div>
+                            )}
                           </td>
                           <td className="py-3 px-4 align-top">
                             <div className="flex items-center gap-1.5">
                               <select
                                 value={draft.basis}
+                                disabled={!isSalesRepSelected}
                                 onChange={(e) => {
                                   const nextBasis = e.target.value as CommissionBasis;
                                   const recalc = calculateJobCommission({
@@ -1245,7 +1271,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                     },
                                   }));
                                 }}
-                                className="border border-slate-200 rounded px-2 py-1 text-xs bg-white"
+                                className="border border-slate-200 rounded px-2 py-1 text-xs bg-white disabled:bg-slate-100 disabled:text-slate-400"
                               >
                                 <option value="gross_profit">Job Net Profit</option>
                                 <option value="net_sales">Net Sales</option>
@@ -1255,7 +1281,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                 min="0"
                                 max="50"
                                 step="0.5"
-                                value={draft.ratePct}
+                                disabled={!isSalesRepSelected}
+                                value={isSalesRepSelected ? draft.ratePct : '0'}
                                 onChange={(e) => {
                                   const nextRate = e.target.value;
                                   const recalc = calculateJobCommission({
@@ -1273,7 +1300,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                     },
                                   }));
                                 }}
-                                className="w-14 border border-slate-200 rounded px-1.5 py-1 text-xs font-mono-nums text-right"
+                                className="w-14 border border-slate-200 rounded px-1.5 py-1 text-xs font-mono-nums text-right disabled:bg-slate-100 disabled:text-slate-400"
                               />
                               <span className="text-slate-400">%</span>
                             </div>
@@ -1284,7 +1311,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                 type="number"
                                 min="0"
                                 step="0.01"
-                                value={draft.amount}
+                                disabled={!isSalesRepSelected}
+                                value={isSalesRepSelected ? draft.amount : '0'}
                                 onChange={(e) =>
                                   setJobCommDrafts((prev) => ({
                                     ...prev,
@@ -1294,10 +1322,11 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                     },
                                   }))
                                 }
-                                className="w-24 border border-slate-200 rounded px-2 py-1 text-xs font-mono-nums font-semibold"
+                                className="w-24 border border-slate-200 rounded px-2 py-1 text-xs font-mono-nums font-semibold disabled:bg-slate-100 disabled:text-slate-400"
                               />
                               <button
                                 type="button"
+                                disabled={!isSalesRepSelected}
                                 onClick={() =>
                                   setJobCommDrafts((prev) => ({
                                     ...prev,
@@ -1308,7 +1337,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                   }))
                                 }
                                 title={`Set to formula amount (${formatMoney(formulaAmount, settings.currency)})`}
-                                className="px-2 py-1 rounded border border-slate-200 text-[11px] text-slate-600 hover:bg-slate-100"
+                                className="px-2 py-1 rounded border border-slate-200 text-[11px] text-slate-600 hover:bg-slate-100 disabled:opacity-40"
                               >
                                 Calc
                               </button>
@@ -1320,6 +1349,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                           <td className="py-3 px-4 align-top">
                             <select
                               value={draft.status}
+                              disabled={!isSalesRepSelected}
                               onChange={(e) =>
                                 setJobCommDrafts((prev) => ({
                                   ...prev,
@@ -1329,7 +1359,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                   },
                                 }))
                               }
-                              className="border border-slate-200 rounded px-2 py-1 text-xs bg-white"
+                              className="border border-slate-200 rounded px-2 py-1 text-xs bg-white disabled:bg-slate-100 disabled:text-slate-400"
                             >
                               <option value="Pending">Pending</option>
                               <option value="Earned">Earned</option>
@@ -1448,7 +1478,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                           {inv.role} · {inv.department}
                         </td>
                         <td className="py-3 px-4 text-right font-mono-nums font-semibold text-slate-900">
-                          {inv.commissionRatePct}%
+                          {inv.role === 'sales' ? `${inv.commissionRatePct}%` : '—'}
                         </td>
                         <td className="py-3 px-4">
                           <StatusText
@@ -1545,7 +1575,9 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                               nextRole,
                               roleToDepartment(nextRole),
                               u.status,
-                              Number(commVal) || 0
+                              nextRole === 'sales'
+                                ? Number(commVal) || settings.defaultCommissionRatePct || 5
+                                : 0
                             );
                           }}
                           className="border border-slate-200 rounded-md px-2.5 py-1.5 text-xs font-medium bg-white"
@@ -1566,7 +1598,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                               u.role,
                               u.department,
                               nextStatus,
-                              Number(commVal) || 0
+                              u.role === 'sales' ? Number(commVal) || 0 : 0
                             );
                           }}
                           className="border border-slate-200 rounded-md px-2.5 py-1.5 text-xs font-medium bg-white"
@@ -1577,39 +1609,45 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                           <option value="disabled">Disabled</option>
                         </select>
 
-                        <div className="flex items-center gap-1 border border-slate-200 rounded-md px-2 py-1 bg-slate-50">
-                          <span className="text-[11px] text-slate-500">Comm %</span>
-                          <input
-                            type="number"
-                            min="0"
-                            max="50"
-                            step="0.5"
-                            value={commVal}
-                            onChange={(e) =>
-                              setCommDrafts((prev) => ({
-                                ...prev,
-                                [u.uid]: e.target.value,
-                              }))
-                            }
-                            className="w-14 bg-white border border-slate-200 rounded px-1.5 py-0.5 text-xs font-mono-nums text-right"
-                            aria-label={`Commission rate for ${u.displayName}`}
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onUpdateUserAccess(
-                                u.uid,
-                                u.role,
-                                u.department,
-                                u.status,
-                                Number(commVal) || 0
-                              )
-                            }
-                            className="px-2 py-0.5 rounded bg-slate-900 text-white text-[11px] font-medium hover:bg-slate-800"
-                          >
-                            Save
-                          </button>
-                        </div>
+                        {u.role === 'sales' ? (
+                          <div className="flex items-center gap-1 border border-slate-200 rounded-md px-2 py-1 bg-slate-50">
+                            <span className="text-[11px] text-slate-500">Comm %</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="50"
+                              step="0.5"
+                              value={commVal}
+                              onChange={(e) =>
+                                setCommDrafts((prev) => ({
+                                  ...prev,
+                                  [u.uid]: e.target.value,
+                                }))
+                              }
+                              className="w-14 bg-white border border-slate-200 rounded px-1.5 py-0.5 text-xs font-mono-nums text-right"
+                              aria-label={`Commission rate for ${u.displayName}`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onUpdateUserAccess(
+                                  u.uid,
+                                  u.role,
+                                  u.department,
+                                  u.status,
+                                  Number(commVal) || 0
+                                )
+                              }
+                              className="px-2 py-0.5 rounded bg-slate-900 text-white text-[11px] font-medium hover:bg-slate-800"
+                            >
+                              Save
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-[11px] text-slate-400 px-2 py-1 border border-slate-100 rounded-md bg-slate-50">
+                            Sales team only
+                          </span>
+                        )}
                       </div>
                     </div>
                   );
@@ -1915,16 +1953,17 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                 </div>
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">
-                    Default Commission (%)
+                    Default Commission (%) {inviteRole !== 'sales' && '— Sales Only'}
                   </label>
                   <input
                     type="number"
                     min="0"
                     max="50"
                     step="0.5"
-                    value={inviteCommRate}
+                    disabled={inviteRole !== 'sales'}
+                    value={inviteRole === 'sales' ? inviteCommRate : '0'}
                     onChange={(e) => setInviteCommRate(e.target.value)}
-                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums disabled:bg-slate-100 disabled:text-slate-400"
                   />
                 </div>
               </div>

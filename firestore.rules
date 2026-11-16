@@ -714,6 +714,46 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidRequisition(data) {
+      return data.keys().hasAll([
+          'requisitionNumber', 'requisitionDate', 'requisitionType', 'department',
+          'priority', 'requestedByUid', 'requestedByName', 'lines',
+          'totalEstimatedCost', 'status', 'ownerUid', 'staffUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'requisitionNumber', 'requisitionDate', 'neededByDate', 'requisitionType',
+          'department', 'priority', 'jobId', 'jobNumber', 'preferredSupplier',
+          'requestedByUid', 'requestedByName', 'lines', 'totalEstimatedCost',
+          'justification', 'status', 'approvedByName', 'approvedDate',
+          'fulfillmentNotes', 'linkedRef', 'ownerUid', 'staffUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.requisitionNumber, 40) &&
+        isNonEmptyStr(data.requisitionDate, 32) &&
+        (!('neededByDate' in data) || isOptionalStr(data.neededByDate, 32)) &&
+        data.requisitionType in ['Purchase Requisition', 'Stock / Material Issue', 'Petty Cash / Expense'] &&
+        data.department in ['Management', 'Sales & Marketing', 'Accounts', 'Production'] &&
+        data.priority in ['Normal', 'Urgent', 'Critical'] &&
+        (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
+        (!('jobNumber' in data) || isOptionalStr(data.jobNumber, 40)) &&
+        (!('preferredSupplier' in data) || isOptionalStr(data.preferredSupplier, 160)) &&
+        isValidId(data.requestedByUid) &&
+        isNonEmptyStr(data.requestedByName, 120) &&
+        data.lines is list && data.lines.size() >= 1 && data.lines.size() <= 10 && data.lines[0] is map &&
+        isNonNegativeNum(data.totalEstimatedCost) &&
+        (!('justification' in data) || isOptionalStr(data.justification, 1000)) &&
+        data.status in ['Draft', 'Submitted', 'Approved', 'Rejected', 'Fulfilled'] &&
+        (!('approvedByName' in data) || isOptionalStr(data.approvedByName, 120)) &&
+        (!('approvedDate' in data) || isOptionalStr(data.approvedDate, 32)) &&
+        (!('fulfillmentNotes' in data) || isOptionalStr(data.fulfillmentNotes, 500)) &&
+        (!('linkedRef' in data) || isOptionalStr(data.linkedRef, 80)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     // -------------------------------------------------------------------------
     // Collection Rules
     // -------------------------------------------------------------------------
@@ -1355,6 +1395,65 @@ service cloud.firestore {
           )
         );
       allow delete: if isManagement() && isValidId(inviteId);
+    }
+
+    // 18. Internal Requisitions (Purchase, Material Issue & Petty Cash)
+    match /requisitions/{requisitionId} {
+      allow get: if isVerifiedSignedIn() && isValidId(requisitionId) && isActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(requisitionId) &&
+        isValidRequisition(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().requestedByUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().status in ['Draft', 'Submitted'] &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isActiveStaff();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(requisitionId) &&
+        isValidRequisition(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          (
+            existing().ownerUid == request.auth.uid &&
+            existing().status in ['Draft', 'Submitted'] &&
+            incoming().status in ['Draft', 'Submitted'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'requisitionDate', 'neededByDate', 'requisitionType', 'department',
+              'priority', 'jobId', 'jobNumber', 'preferredSupplier', 'lines',
+              'totalEstimatedCost', 'justification', 'status', 'updatedAt'
+            ])
+          ) ||
+          (
+            isAccountsOrManagement() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'approvedByName', 'approvedDate', 'fulfillmentNotes',
+              'linkedRef', 'updatedAt'
+            ])
+          ) ||
+          (
+            isProductionOrManagement() &&
+            existing().requisitionType == 'Stock / Material Issue' &&
+            existing().status == 'Approved' &&
+            incoming().status == 'Fulfilled' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'fulfillmentNotes', 'linkedRef', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isVerifiedSignedIn() && isValidId(requisitionId) && (
+        isManagement() ||
+        (existing().ownerUid == request.auth.uid && existing().status == 'Draft')
+      );
     }
   }
 }
