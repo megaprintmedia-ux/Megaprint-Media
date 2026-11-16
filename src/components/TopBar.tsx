@@ -1,12 +1,14 @@
 import React from 'react';
 import { LogOut, Menu, Plus } from 'lucide-react';
-import { NavSection, UserProfile, UserRole } from '../types/erp';
+import { NavSection, TaxAccessScope, UserProfile, UserRole } from '../types/erp';
 
 interface TopBarProps {
   activeSection: NavSection;
   profile: UserProfile;
   activeViewRole: UserRole;
-  onChangeViewRole: (role: UserRole) => void;
+  taxScope?: TaxAccessScope;
+  previewVatOnly?: boolean;
+  onChangeViewRole: (role: UserRole, vatOnly?: boolean) => void;
   onOpenMobileMenu: () => void;
   onQuickNewJob: () => void;
   onSignOut: () => void;
@@ -42,6 +44,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   activeSection,
   profile,
   activeViewRole,
+  taxScope = 'all',
+  previewVatOnly = false,
   onChangeViewRole,
   onOpenMobileMenu,
   onQuickNewJob,
@@ -49,6 +53,15 @@ export const TopBar: React.FC<TopBarProps> = ({
 }) => {
   const canCreateJob =
     activeViewRole === 'management' || activeViewRole === 'sales';
+  const isViewingVatOnly =
+    activeViewRole === 'accounts' && (taxScope === 'vat_only' || previewVatOnly);
+  const activeRoleLabel = isViewingVatOnly
+    ? 'Accounts (ZIMRA / VAT-Only)'
+    : ROLE_LABELS[activeViewRole];
+  const profileRoleLabel =
+    profile.role === 'accounts' && profile.taxScope === 'vat_only'
+      ? 'Accounts (ZIMRA / VAT-Only)'
+      : ROLE_LABELS[profile.role];
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 px-4 lg:px-6 flex items-center justify-between gap-8 shrink-0 no-print">
@@ -63,7 +76,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         </button>
         <div className="flex items-center gap-2 text-sm min-w-0">
           <span className="text-slate-500 hidden sm:inline whitespace-nowrap">
-            {ROLE_LABELS[activeViewRole]}
+            {activeRoleLabel}
           </span>
           <span className="text-slate-300 hidden sm:inline">/</span>
           <h1 className="font-display font-semibold text-slate-900 truncate">
@@ -79,14 +92,22 @@ export const TopBar: React.FC<TopBarProps> = ({
           <label className="hidden md:flex items-center gap-2 text-xs text-slate-600">
             <span className="whitespace-nowrap">Team view:</span>
             <select
-              value={activeViewRole}
-              onChange={(e) => onChangeViewRole(e.target.value as UserRole)}
+              value={isViewingVatOnly ? 'accounts_vat' : activeViewRole}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === 'accounts_vat') {
+                  onChangeViewRole('accounts', true);
+                } else {
+                  onChangeViewRole(val as UserRole, false);
+                }
+              }}
               className="border border-slate-200 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-800 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-600"
               aria-label="Preview team workspace"
             >
               <option value="management">Management</option>
               <option value="sales">Sales &amp; Marketing</option>
-              <option value="accounts">Accounts</option>
+              <option value="accounts">Accounts (Full)</option>
+              <option value="accounts_vat">Accounts (ZIMRA / VAT-Only)</option>
               <option value="production">Production</option>
             </select>
           </label>
@@ -108,9 +129,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             <div className="text-xs font-semibold text-slate-900 max-w-[140px] truncate">
               {profile.displayName}
             </div>
-            <div className="text-[11px] text-slate-500">
-              {ROLE_LABELS[profile.role]}
-            </div>
+            <div className="text-[11px] text-slate-500">{profileRoleLabel}</div>
           </div>
           <button
             type="button"

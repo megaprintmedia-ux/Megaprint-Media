@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   Download,
   Eye,
+  Pencil,
   Plus,
   Printer,
   Search,
@@ -39,9 +40,18 @@ interface GoodsReceivedViewProps {
   onUpdateGoodsReceipt: (
     grnId: string,
     updates: Partial<{
+      grnNumber: string;
+      supplierName: string;
+      deliveryNoteRef: string;
       conditionStatus: GoodsReceiptCondition;
       supplierInvoiceId: string;
       supplierInvoiceNo: string;
+      jobId: string;
+      jobNumber: string;
+      receivedDate: string;
+      receivedByName: string;
+      items: GoodsReceiptLine[];
+      postToInventory: boolean;
       notes: string;
     }>
   ) => Promise<void>;
@@ -111,6 +121,25 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
   const [editSupInvId, setEditSupInvId] = useState('');
   const [editNotes, setEditNotes] = useState('');
   const [updatingGrn, setUpdatingGrn] = useState(false);
+
+  // Management Full Edit & Delete state
+  const [editingGrn, setEditingGrn] = useState<GoodsReceipt | null>(null);
+  const [editGrnNumber, setEditGrnNumber] = useState('');
+  const [editSupplierName, setEditSupplierName] = useState('');
+  const [editDeliveryNoteRef, setEditDeliveryNoteRef] = useState('');
+  const [editSupplierInvoiceId, setEditSupplierInvoiceId] = useState('');
+  const [editSupplierInvoiceNo, setEditSupplierInvoiceNo] = useState('');
+  const [editJobId, setEditJobId] = useState('');
+  const [editReceivedDate, setEditReceivedDate] = useState('');
+  const [editReceivedByName, setEditReceivedByName] = useState('');
+  const [editConditionStatus, setEditConditionStatus] =
+    useState<GoodsReceiptCondition>('Accepted');
+  const [editPostToInventory, setEditPostToInventory] = useState(true);
+  const [editFullNotes, setEditFullNotes] = useState('');
+  const [editLines, setEditLines] = useState<DraftGrnLine[]>([]);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [deleteConfirmGrn, setDeleteConfirmGrn] = useState<GoodsReceipt | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const canInspectUpdate =
     role === 'management' || role === 'production' || role === 'accounts';
@@ -311,6 +340,135 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
       });
     } finally {
       setUpdatingGrn(false);
+    }
+  };
+
+  const editDraftTotalValue = useMemo(() => {
+    return round2(
+      editLines.reduce((acc, line) => {
+        const qty = Math.max(0, Number(line.quantityReceived) || 0);
+        const cost = Math.max(0, Number(line.unitCost) || 0);
+        return acc + qty * cost;
+      }, 0)
+    );
+  }, [editLines]);
+
+  const openEditGrnModal = (grn: GoodsReceipt) => {
+    setEditingGrn(grn);
+    setEditGrnNumber(grn.grnNumber);
+    setEditSupplierName(grn.supplierName);
+    setEditDeliveryNoteRef(grn.deliveryNoteRef || '');
+    setEditSupplierInvoiceId(grn.supplierInvoiceId || '');
+    setEditSupplierInvoiceNo(grn.supplierInvoiceNo || '');
+    setEditJobId(grn.jobId || '');
+    setEditReceivedDate(grn.receivedDate);
+    setEditReceivedByName(grn.receivedByName);
+    setEditConditionStatus(grn.conditionStatus);
+    setEditPostToInventory(Boolean(grn.postToInventory));
+    setEditFullNotes(grn.notes || '');
+    setEditLines(
+      grn.items.length > 0
+        ? grn.items.map((l) => ({
+            inventoryItemId: l.inventoryItemId || '',
+            sku: l.sku || '',
+            description: l.description,
+            quantityOrdered: String(l.quantityOrdered),
+            quantityReceived: String(l.quantityReceived),
+            unit: l.unit || 'Pcs',
+            unitCost: String(l.unitCost),
+          }))
+        : [
+            {
+              inventoryItemId: '',
+              sku: '',
+              description: '',
+              quantityOrdered: '1',
+              quantityReceived: '1',
+              unit: 'Pcs',
+              unitCost: '0',
+            },
+          ]
+    );
+  };
+
+  const handleEditLineInventoryPick = (idx: number, itemId: string) => {
+    const item = inventoryItems.find((i) => i.id === itemId);
+    setEditLines((prev) =>
+      prev.map((row, i) => {
+        if (i !== idx) return row;
+        if (!item) {
+          return { ...row, inventoryItemId: '', sku: '' };
+        }
+        return {
+          ...row,
+          inventoryItemId: item.id,
+          sku: item.sku,
+          description: item.name,
+          unit: item.unit,
+          unitCost: String(item.unitCost),
+        };
+      })
+    );
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingGrn || !editSupplierName.trim() || editLines.length === 0) return;
+    const chosenJob = jobs.find((j) => j.id === editJobId);
+    const chosenSupInv = supplierInvoices.find((s) => s.id === editSupplierInvoiceId);
+
+    const parsedLines: GoodsReceiptLine[] = editLines.slice(0, 10).map((l) => ({
+      inventoryItemId: l.inventoryItemId,
+      sku: l.sku.trim(),
+      description: l.description.trim() || 'Delivered Item',
+      quantityOrdered: Math.max(0, Number(l.quantityOrdered) || 0),
+      quantityReceived: Math.max(0, Number(l.quantityReceived) || 0),
+      unit: l.unit.trim() || 'Pcs',
+      unitCost: Math.max(0, Number(l.unitCost) || 0),
+    }));
+
+    setSavingEdit(true);
+    try {
+      await onUpdateGoodsReceipt(editingGrn.id, {
+        grnNumber: editGrnNumber.trim() || editingGrn.grnNumber,
+        supplierName: editSupplierName.trim(),
+        deliveryNoteRef: editDeliveryNoteRef.trim(),
+        supplierInvoiceId: chosenSupInv?.id || '',
+        supplierInvoiceNo:
+          chosenSupInv?.supplierInvoiceNo ||
+          chosenSupInv?.recordNumber ||
+          editSupplierInvoiceNo.trim(),
+        jobId: chosenJob?.id || '',
+        jobNumber: chosenJob?.jobNumber || '',
+        receivedDate: editReceivedDate,
+        receivedByName:
+          editReceivedByName.trim() || userDisplayName || editingGrn.receivedByName,
+        conditionStatus: editConditionStatus,
+        items: parsedLines,
+        postToInventory:
+          editPostToInventory && editConditionStatus !== 'Damaged / Rejected',
+        notes: editFullNotes.trim(),
+      });
+      if (selectedGrn?.id === editingGrn.id) {
+        setSelectedGrn(null);
+      }
+      setEditingGrn(null);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteConfirmGrn) return;
+    setDeleting(true);
+    try {
+      await onDeleteGoodsReceipt(deleteConfirmGrn.id);
+      if (selectedGrn?.id === deleteConfirmGrn.id) {
+        setSelectedGrn(null);
+      }
+      setDeleteConfirmGrn(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -545,15 +703,26 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
                           <span>Inspect</span>
                         </button>
                         {role === 'management' && (
-                          <button
-                            type="button"
-                            onClick={() => onDeleteGoodsReceipt(grn.id)}
-                            className="p-1.5 text-slate-400 hover:text-red-600 rounded hover:bg-red-50"
-                            title="Delete GRN"
-                            aria-label={`Delete ${grn.grnNumber}`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openEditGrnModal(grn)}
+                              className="p-1.5 text-slate-400 hover:text-blue-600 rounded hover:bg-blue-50"
+                              title="Edit GRN"
+                              aria-label={`Edit ${grn.grnNumber}`}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeleteConfirmGrn(grn)}
+                              className="p-1.5 text-slate-400 hover:text-red-600 rounded hover:bg-red-50"
+                              title="Delete GRN"
+                              aria-label={`Delete ${grn.grnNumber}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
@@ -1160,6 +1329,454 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
                   </div>
                 </form>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Management Edit GRN Modal */}
+      {editingGrn && role === 'management' && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4 overflow-y-auto no-print">
+          <div className="bg-white border border-slate-200 rounded-lg max-w-4xl w-full max-h-[92vh] flex flex-col">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h2 className="font-display text-base font-bold text-slate-900">
+                  Edit Goods Received Note ·{' '}
+                  <span className="font-mono-nums">{editingGrn.grnNumber}</span>
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Management correction for supplier delivery, quantities, cost, and job
+                  allocation.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingGrn(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-md"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={handleEditSubmit}
+              className="p-6 overflow-y-auto space-y-5 text-xs"
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    GRN Number *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editGrnNumber}
+                    onChange={(e) => setEditGrnNumber(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Supplier Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editSupplierName}
+                    onChange={(e) => setEditSupplierName(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Delivery Note / Waybill #
+                  </label>
+                  <input
+                    type="text"
+                    value={editDeliveryNoteRef}
+                    onChange={(e) => setEditDeliveryNoteRef(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Match Supplier Tax Invoice
+                  </label>
+                  <select
+                    value={editSupplierInvoiceId}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setEditSupplierInvoiceId(nextId);
+                      const inv = supplierInvoices.find((s) => s.id === nextId);
+                      if (inv) {
+                        setEditSupplierInvoiceNo(
+                          inv.supplierInvoiceNo || inv.recordNumber
+                        );
+                      }
+                    }}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 bg-white"
+                  >
+                    <option value="">Manual / Unmatched</option>
+                    {supplierInvoices.map((si) => (
+                      <option key={si.id} value={si.id}>
+                        {si.recordNumber} · {si.supplierName} ({si.supplierInvoiceNo})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Supplier Invoice #
+                  </label>
+                  <input
+                    type="text"
+                    value={editSupplierInvoiceNo}
+                    onChange={(e) => setEditSupplierInvoiceNo(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Allocate to Job
+                  </label>
+                  <select
+                    value={editJobId}
+                    onChange={(e) => setEditJobId(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 bg-white"
+                  >
+                    <option value="">General Warehouse Stock</option>
+                    {jobs.map((j) => (
+                      <option key={j.id} value={j.id}>
+                        {j.jobNumber} · {j.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Received Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={editReceivedDate}
+                    onChange={(e) => setEditReceivedDate(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Inspected / Received By *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editReceivedByName}
+                    onChange={(e) => setEditReceivedByName(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Receiving Inspection Condition
+                  </label>
+                  <select
+                    value={editConditionStatus}
+                    onChange={(e) => {
+                      const next = e.target.value as GoodsReceiptCondition;
+                      setEditConditionStatus(next);
+                      if (next === 'Damaged / Rejected') {
+                        setEditPostToInventory(false);
+                      }
+                    }}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 bg-white"
+                  >
+                    {CONDITIONS.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={
+                    editPostToInventory && editConditionStatus !== 'Damaged / Rejected'
+                  }
+                  disabled={editConditionStatus === 'Damaged / Rejected'}
+                  onChange={(e) => setEditPostToInventory(e.target.checked)}
+                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-600"
+                />
+                <span className="font-medium text-slate-800">
+                  Marked as posted to Inventory stock
+                </span>
+              </label>
+
+              {/* Edit Line Items */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-800">
+                    Delivered Line Items (Max 10)
+                  </span>
+                  {editLines.length < 10 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditLines((prev) => [
+                          ...prev,
+                          {
+                            inventoryItemId: '',
+                            sku: '',
+                            description: '',
+                            quantityOrdered: '1',
+                            quantityReceived: '1',
+                            unit: 'Pcs',
+                            unitCost: '0',
+                          },
+                        ])
+                      }
+                      className="text-blue-600 hover:text-blue-700 font-semibold"
+                    >
+                      + Add Line
+                    </button>
+                  )}
+                </div>
+
+                <div className="border border-slate-200 rounded-md divide-y divide-slate-200">
+                  {editLines.map((line, idx) => (
+                    <div key={idx} className="p-3 space-y-2.5 bg-white">
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end">
+                        <div className="md:col-span-4">
+                          <label className="block text-[11px] text-slate-500 mb-1">
+                            Link Inventory SKU (Optional)
+                          </label>
+                          <select
+                            value={line.inventoryItemId}
+                            onChange={(e) =>
+                              handleEditLineInventoryPick(idx, e.target.value)
+                            }
+                            className="w-full border border-slate-200 rounded-md px-2.5 py-1.5 bg-white"
+                          >
+                            <option value="">Custom / Non-inventory item</option>
+                            {inventoryItems.map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.sku} · {item.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="md:col-span-8">
+                          <label className="block text-[11px] text-slate-500 mb-1">
+                            Item Description *
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            value={line.description}
+                            onChange={(e) =>
+                              setEditLines((prev) =>
+                                prev.map((r, i) =>
+                                  i === idx ? { ...r, description: e.target.value } : r
+                                )
+                              )
+                            }
+                            className="w-full border border-slate-200 rounded-md px-2.5 py-1.5"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-12 gap-2.5 items-end">
+                        <div className="sm:col-span-2">
+                          <label className="block text-[11px] text-slate-500 mb-1">
+                            Ordered
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={line.quantityOrdered}
+                            onChange={(e) =>
+                              setEditLines((prev) =>
+                                prev.map((r, i) =>
+                                  i === idx
+                                    ? { ...r, quantityOrdered: e.target.value }
+                                    : r
+                                )
+                              )
+                            }
+                            className="w-full border border-slate-200 rounded-md px-2.5 py-1.5 font-mono-nums"
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="block text-[11px] text-slate-500 mb-1">
+                            Received *
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            required
+                            value={line.quantityReceived}
+                            onChange={(e) =>
+                              setEditLines((prev) =>
+                                prev.map((r, i) =>
+                                  i === idx
+                                    ? { ...r, quantityReceived: e.target.value }
+                                    : r
+                                )
+                              )
+                            }
+                            className="w-full border border-slate-200 rounded-md px-2.5 py-1.5 font-mono-nums"
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <label className="block text-[11px] text-slate-500 mb-1">
+                            Unit
+                          </label>
+                          <input
+                            type="text"
+                            value={line.unit}
+                            onChange={(e) =>
+                              setEditLines((prev) =>
+                                prev.map((r, i) =>
+                                  i === idx ? { ...r, unit: e.target.value } : r
+                                )
+                              )
+                            }
+                            className="w-full border border-slate-200 rounded-md px-2.5 py-1.5"
+                          />
+                        </div>
+                        <div className="sm:col-span-3">
+                          <label className="block text-[11px] text-slate-500 mb-1">
+                            Unit Cost ({settings.currency})
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={line.unitCost}
+                            onChange={(e) =>
+                              setEditLines((prev) =>
+                                prev.map((r, i) =>
+                                  i === idx ? { ...r, unitCost: e.target.value } : r
+                                )
+                              )
+                            }
+                            className="w-full border border-slate-200 rounded-md px-2.5 py-1.5 font-mono-nums"
+                          />
+                        </div>
+                        <div className="sm:col-span-2 text-right pb-1.5 font-mono-nums font-semibold text-slate-800">
+                          {formatMoney(
+                            (Number(line.quantityReceived) || 0) *
+                              (Number(line.unitCost) || 0),
+                            settings.currency
+                          )}
+                        </div>
+                        <div className="sm:col-span-1 text-right">
+                          {editLines.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditLines((prev) => prev.filter((_, i) => i !== idx))
+                              }
+                              className="p-1.5 text-slate-400 hover:text-red-600"
+                              aria-label="Remove line"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">
+                  Inspection Notes / Discrepancy Remarks
+                </label>
+                <textarea
+                  rows={2}
+                  value={editFullNotes}
+                  onChange={(e) => setEditFullNotes(e.target.value)}
+                  className="w-full border border-slate-200 rounded-md px-3 py-2"
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-4 pt-2 border-t border-slate-200">
+                <div className="text-sm font-semibold text-slate-900 font-mono-nums">
+                  Total Received Value:{' '}
+                  {formatMoney(editDraftTotalValue, settings.currency)}
+                </div>
+                <div className="flex items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setEditingGrn(null)}
+                    className="px-4 py-2 rounded-md border border-slate-200 text-slate-700 font-medium hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingEdit}
+                    className="px-4 py-2 rounded-md bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {savingEdit ? 'Saving Changes...' : 'Save Changes'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Management Delete Confirmation Modal */}
+      {deleteConfirmGrn && role === 'management' && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4 no-print">
+          <div className="bg-white border border-slate-200 rounded-lg max-w-md w-full p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-display text-base font-bold text-slate-900">
+                  Delete Goods Received Note?
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  This permanently removes{' '}
+                  <strong className="font-mono-nums text-slate-800">
+                    {deleteConfirmGrn.grnNumber}
+                  </strong>{' '}
+                  from {deleteConfirmGrn.supplierName} (
+                  {formatMoney(deleteConfirmGrn.totalValue, settings.currency)}).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmGrn(null)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-200 text-xs">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmGrn(null)}
+                className="px-3.5 py-2 rounded-md border border-slate-200 text-slate-700 font-medium hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={handleConfirmDelete}
+                className="px-3.5 py-2 rounded-md bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? 'Deleting...' : 'Delete GRN'}
+              </button>
             </div>
           </div>
         </div>

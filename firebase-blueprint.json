@@ -11,6 +11,7 @@
         "role": { "type": "string", "enum": ["management", "sales", "accounts", "production"] },
         "department": { "type": "string", "enum": ["Management", "Sales & Marketing", "Accounts", "Production"] },
         "status": { "type": "string", "enum": ["active", "pending", "disabled"] },
+        "taxScope": { "type": "string", "enum": ["all", "vat_only"] },
         "commissionRatePct": { "type": "number" },
         "inviteId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -165,6 +166,8 @@
         "notes": { "type": "string", "maxLength": 1000 },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "staffUids": { "type": "array" },
+        "isVatReportable": { "type": "boolean" },
+        "vatViewerUids": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -197,6 +200,8 @@
         "notes": { "type": "string", "maxLength": 1000 },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "staffUids": { "type": "array" },
+        "isVatReportable": { "type": "boolean" },
+        "vatViewerUids": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -356,6 +361,8 @@
         "notes": { "type": "string", "maxLength": 1000 },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "viewerUids": { "type": "array" },
+        "isVatReportable": { "type": "boolean" },
+        "vatViewerUids": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -487,6 +494,7 @@
         "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "role": { "type": "string", "enum": ["management", "sales", "accounts", "production"] },
         "department": { "type": "string", "enum": ["Management", "Sales & Marketing", "Accounts", "Production"] },
+        "taxScope": { "type": "string", "enum": ["all", "vat_only"] },
         "commissionRatePct": { "type": "number" },
         "status": { "type": "string", "enum": ["invited", "accepted", "revoked"] },
         "invitedByName": { "type": "string", "minLength": 1, "maxLength": 120 },

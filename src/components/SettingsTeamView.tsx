@@ -19,6 +19,7 @@ import {
   CommissionStatus,
   CompanySettings,
   Job,
+  TaxAccessScope,
   UserInvite,
   UserInviteStatus,
   UserProfile,
@@ -46,8 +47,10 @@ interface SettingsTeamViewProps {
     role: UserRole,
     department: UserProfile['department'],
     status: UserProfile['status'],
-    commissionRatePct?: number
+    commissionRatePct?: number,
+    taxScope?: TaxAccessScope
   ) => Promise<void>;
+  onSyncZimraVatScope?: () => Promise<number>;
   onUpdateJobCommission: (
     jobId: string,
     updates: {
@@ -76,6 +79,7 @@ interface SettingsTeamViewProps {
     displayName: string;
     role: UserRole;
     department: UserProfile['department'];
+    taxScope?: TaxAccessScope;
     commissionRatePct: number;
   }) => Promise<string | undefined>;
   onUpdateUserInviteStatus: (
@@ -118,6 +122,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
   jobs,
   onUpdateSettings,
   onUpdateUserAccess,
+  onSyncZimraVatScope,
   onUpdateJobCommission,
   onCreateChartAccount,
   onUpdateChartAccount,
@@ -194,12 +199,15 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteName, setInviteName] = useState('');
   const [inviteRole, setInviteRole] = useState<UserRole>('sales');
+  const [inviteTaxScope, setInviteTaxScope] = useState<TaxAccessScope>('all');
   const [inviteCommRate, setInviteCommRate] = useState(
     String(settings.defaultCommissionRatePct ?? 5)
   );
   const [savingInvite, setSavingInvite] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [commDrafts, setCommDrafts] = useState<Record<string, string>>({});
+  const [syncingZimra, setSyncingZimra] = useState(false);
+  const [zimraSyncNotice, setZimraSyncNotice] = useState('');
 
   useEffect(() => {
     setCompanyName(settings.companyName);
@@ -402,15 +410,31 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
         displayName: inviteName.trim() || cleanEmail.split('@')[0],
         role: inviteRole,
         department: roleToDepartment(inviteRole),
+        taxScope: inviteRole === 'accounts' ? inviteTaxScope : 'all',
         commissionRatePct: Math.max(0, Math.min(50, Number(inviteCommRate) || 0)),
       });
       setInviteEmail('');
       setInviteName('');
       setInviteRole('sales');
+      setInviteTaxScope('all');
       setInviteCommRate('5');
       setShowInviteModal(false);
     } finally {
       setSavingInvite(false);
+    }
+  };
+
+  const handleSyncZimraAccess = async () => {
+    if (!onSyncZimraVatScope) return;
+    setSyncingZimra(true);
+    setZimraSyncNotice('');
+    try {
+      const updatedCount = await onSyncZimraVatScope();
+      setZimraSyncNotice(
+        `Synced ZIMRA VAT-only visibility across ${updatedCount} financial record${updatedCount === 1 ? '' : 's'}.`
+      );
+    } finally {
+      setSyncingZimra(false);
     }
   };
 
@@ -1396,44 +1420,63 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
       {activeTab === 'team' && (
         <div className="space-y-6">
           {/* Invite / Pre-Authorize User Banner */}
-          <div className="bg-white border border-slate-200 rounded-lg p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1">
-              <h2 className="font-display text-sm font-bold text-slate-900">
-                Add Team Members &amp; Pre-Authorize Logins
-              </h2>
-              <p className="text-xs text-slate-500 max-w-2xl">
-                Add staff by their Google email before they sign in. When they open the portal
-                link and sign in with Google, their role, department, and default sales
-                commission rate activate automatically.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={handleCopyInviteUrl}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50"
-              >
-                {copiedUrl ? (
-                  <>
-                    <Check className="h-3.5 w-3.5 text-emerald-600" />
-                    <span className="text-emerald-700">Portal Link Copied</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="h-3.5 w-3.5" />
-                    <span>Copy Portal Login Link</span>
-                  </>
+          <div className="bg-white border border-slate-200 rounded-lg p-5 space-y-3">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <h2 className="font-display text-sm font-bold text-slate-900">
+                  Add Team Members &amp; Pre-Authorize Logins
+                </h2>
+                <p className="text-xs text-slate-500 max-w-2xl">
+                  Add staff or external ZIMRA VAT auditors by email before they sign in.
+                  Accounts marked <strong className="text-slate-700">ZIMRA / VAT-Only</strong>{' '}
+                  only see VAT-taxable records with a customer or supplier TIN / VAT Reg #.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {onSyncZimraVatScope && (
+                  <button
+                    type="button"
+                    disabled={syncingZimra}
+                    onClick={handleSyncZimraAccess}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    <span>
+                      {syncingZimra ? 'Syncing ZIMRA Scope...' : 'Sync ZIMRA VAT Scope'}
+                    </span>
+                  </button>
                 )}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowInviteModal(true)}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700"
-              >
-                <UserPlus className="h-4 w-4" />
-                <span>Add / Invite User</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={handleCopyInviteUrl}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  {copiedUrl ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-emerald-600" />
+                      <span className="text-emerald-700">Portal Link Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-3.5 w-3.5" />
+                      <span>Copy Portal Login Link</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowInviteModal(true)}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700"
+                >
+                  <UserPlus className="h-4 w-4" />
+                  <span>Add / Invite User</span>
+                </button>
+              </div>
             </div>
+            {zimraSyncNotice && (
+              <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+                {zimraSyncNotice}
+              </div>
+            )}
           </div>
 
           {/* Pending & Historical Invitations */}
@@ -1475,7 +1518,22 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                           <div className="text-slate-500 font-mono-nums">{inv.email}</div>
                         </td>
                         <td className="py-3 px-4 text-slate-700 capitalize">
-                          {inv.role} · {inv.department}
+                          <div>
+                            {inv.role} · {inv.department}
+                          </div>
+                          {inv.role === 'accounts' && (
+                            <div
+                              className={`text-[11px] mt-0.5 normal-case ${
+                                inv.taxScope === 'vat_only'
+                                  ? 'text-amber-700 font-semibold'
+                                  : 'text-slate-500'
+                              }`}
+                            >
+                              {inv.taxScope === 'vat_only'
+                                ? 'ZIMRA / VAT-Only Auditor (Read-Only · TIN & VAT Only)'
+                                : 'Full Company Accounts'}
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 px-4 text-right font-mono-nums font-semibold text-slate-900">
                           {inv.role === 'sales' ? `${inv.commissionRatePct}%` : '—'}
@@ -1577,7 +1635,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                               u.status,
                               nextRole === 'sales'
                                 ? Number(commVal) || settings.defaultCommissionRatePct || 5
-                                : 0
+                                : 0,
+                              nextRole === 'accounts' ? u.taxScope || 'all' : 'all'
                             );
                           }}
                           className="border border-slate-200 rounded-md px-2.5 py-1.5 text-xs font-medium bg-white"
@@ -1589,6 +1648,34 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                           <option value="production">Production</option>
                         </select>
 
+                        {u.role === 'accounts' && (
+                          <select
+                            value={u.taxScope || 'all'}
+                            onChange={(e) => {
+                              const nextScope = e.target.value as TaxAccessScope;
+                              onUpdateUserAccess(
+                                u.uid,
+                                u.role,
+                                u.department,
+                                u.status,
+                                0,
+                                nextScope
+                              );
+                            }}
+                            className={`border rounded-md px-2.5 py-1.5 text-xs font-medium ${
+                              u.taxScope === 'vat_only'
+                                ? 'border-amber-300 bg-amber-50 text-amber-900'
+                                : 'border-slate-200 bg-white text-slate-800'
+                            }`}
+                            aria-label={`Tax audit scope for ${u.displayName}`}
+                          >
+                            <option value="all">Full Company Accounts</option>
+                            <option value="vat_only">
+                              ZIMRA / VAT-Only (Read-Only · TIN &amp; VAT)
+                            </option>
+                          </select>
+                        )}
+
                         <select
                           value={u.status}
                           onChange={(e) => {
@@ -1598,7 +1685,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                               u.role,
                               u.department,
                               nextStatus,
-                              u.role === 'sales' ? Number(commVal) || 0 : 0
+                              u.role === 'sales' ? Number(commVal) || 0 : 0,
+                              u.role === 'accounts' ? u.taxScope || 'all' : 'all'
                             );
                           }}
                           className="border border-slate-200 rounded-md px-2.5 py-1.5 text-xs font-medium bg-white"
@@ -1635,7 +1723,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                   u.role,
                                   u.department,
                                   u.status,
-                                  Number(commVal) || 0
+                                  Number(commVal) || 0,
+                                  'all'
                                 )
                               }
                               className="px-2 py-0.5 rounded bg-slate-900 text-white text-[11px] font-medium hover:bg-slate-800"
@@ -1645,7 +1734,9 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                           </div>
                         ) : (
                           <span className="text-[11px] text-slate-400 px-2 py-1 border border-slate-100 rounded-md bg-slate-50">
-                            Sales team only
+                            {u.role === 'accounts' && u.taxScope === 'vat_only'
+                              ? 'ZIMRA VAT Audit'
+                              : 'Sales team only'}
                           </span>
                         )}
                       </div>
@@ -1937,6 +2028,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                     onChange={(e) => {
                       const r = e.target.value as UserRole;
                       setInviteRole(r);
+                      if (r !== 'accounts') setInviteTaxScope('all');
                       setInviteCommRate(
                         r === 'sales'
                           ? String(settings.defaultCommissionRatePct ?? 5)
@@ -1967,6 +2059,32 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                   />
                 </div>
               </div>
+              {inviteRole === 'accounts' && (
+                <div className="bg-amber-50/70 border border-amber-200 rounded-md p-3 space-y-2">
+                  <label className="block font-semibold text-slate-800">
+                    Accounts Visibility &amp; ZIMRA Audit Scope
+                  </label>
+                  <select
+                    value={inviteTaxScope}
+                    onChange={(e) =>
+                      setInviteTaxScope(e.target.value as TaxAccessScope)
+                    }
+                    className="w-full border border-amber-200 rounded-md px-3 py-2 text-xs bg-white font-medium text-slate-800"
+                  >
+                    <option value="all">
+                      Full Company Accounts (Cash Book, Expenses &amp; All Invoices)
+                    </option>
+                    <option value="vat_only">
+                      ZIMRA / VAT-Only Auditor (Read-Only · VAT &amp; TIN Records Only)
+                    </option>
+                  </select>
+                  <p className="text-[11px] text-amber-900 leading-relaxed">
+                    {inviteTaxScope === 'vat_only'
+                      ? 'ZIMRA / VAT-Only accounts are strictly read-only and cannot see non-VAT invoices, non-TIN transactions, Cash Book, Payroll, or Jobs.'
+                      : 'Full Company Accounts can manage invoices, supplier bills, Cash Book, and internal non-VAT transactions.'}
+                  </p>
+                </div>
+              )}
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"

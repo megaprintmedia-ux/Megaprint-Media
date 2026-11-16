@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { useErpData } from './hooks/useErpData';
-import { Job, NavSection, UserRole } from './types/erp';
+import { Job, NavSection, TaxAccessScope, UserRole } from './types/erp';
+import {
+  computeExpenseVatReportable,
+  computeInvoiceVatReportable,
+  computeSupplierInvoiceVatReportable,
+} from './utils/vat';
 import { BrandLogo } from './components/BrandLogo';
 import { LoginView } from './components/LoginView';
 import { Sidebar } from './components/Sidebar';
@@ -30,6 +35,13 @@ const DEFAULT_SECTION_BY_ROLE: Record<UserRole, NavSection> = {
   production: 'job-cards',
 };
 
+const VAT_ONLY_ALLOWED_SECTIONS: NavSection[] = [
+  'invoices',
+  'supplier-invoices',
+  'accounting',
+  'reports',
+];
+
 const ErpWorkspace: React.FC = () => {
   const {
     user,
@@ -53,6 +65,7 @@ const ErpWorkspace: React.FC = () => {
 
   const erp = useErpData();
   const [activeSection, setActiveSection] = useState<NavSection>('dashboard');
+  const [previewVatOnly, setPreviewVatOnly] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [selectedJobCard, setSelectedJobCard] = useState<Job | null>(null);
   const [prefillInvoiceJob, setPrefillInvoiceJob] = useState<Job | null>(null);
@@ -249,13 +262,40 @@ const ErpWorkspace: React.FC = () => {
   const effectiveRole: UserRole =
     profile.role === 'management' ? activeViewRole : profile.role;
 
+  const effectiveTaxScope: TaxAccessScope =
+    profile.role === 'management'
+      ? effectiveRole === 'accounts' && previewVatOnly
+        ? 'vat_only'
+        : 'all'
+      : profile.taxScope || 'all';
+
+  const isVatOnlyView =
+    effectiveRole === 'accounts' && effectiveTaxScope === 'vat_only';
+
+  const visibleSection: NavSection =
+    isVatOnlyView && !VAT_ONLY_ALLOWED_SECTIONS.includes(activeSection)
+      ? 'invoices'
+      : activeSection;
+
+  const scopedInvoices = isVatOnlyView
+    ? erp.invoices.filter((i) => computeInvoiceVatReportable(i))
+    : erp.invoices;
+  const scopedSupplierInvoices = isVatOnlyView
+    ? erp.supplierInvoices.filter((s) => computeSupplierInvoiceVatReportable(s))
+    : erp.supplierInvoices;
+  const scopedExpenses = isVatOnlyView
+    ? erp.expenses.filter((e) => computeExpenseVatReportable(e))
+    : erp.expenses;
+
   const liveSelectedJob = selectedJobCard
     ? erp.jobs.find((j) => j.id === selectedJobCard.id) || selectedJobCard
     : null;
 
-  const handleRolePreviewChange = (nextRole: UserRole) => {
+  const handleRolePreviewChange = (nextRole: UserRole, vatOnly?: boolean) => {
+    const nextVatOnly = Boolean(vatOnly && nextRole === 'accounts');
+    setPreviewVatOnly(nextVatOnly);
     setActiveViewRole(nextRole);
-    setActiveSection(DEFAULT_SECTION_BY_ROLE[nextRole]);
+    setActiveSection(nextVatOnly ? 'invoices' : DEFAULT_SECTION_BY_ROLE[nextRole]);
   };
 
   const handleQuickNewJob = () => {
@@ -272,9 +312,10 @@ const ErpWorkspace: React.FC = () => {
   return (
     <div className="min-h-screen flex bg-slate-50 text-slate-900">
       <Sidebar
-        activeSection={activeSection}
+        activeSection={visibleSection}
         onSelect={setActiveSection}
         role={effectiveRole}
+        taxScope={effectiveTaxScope}
         settings={erp.settings}
         mobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
@@ -282,9 +323,11 @@ const ErpWorkspace: React.FC = () => {
 
       <div className="flex-1 flex flex-col min-w-0">
         <TopBar
-          activeSection={activeSection}
+          activeSection={visibleSection}
           profile={profile}
           activeViewRole={effectiveRole}
+          taxScope={effectiveTaxScope}
+          previewVatOnly={previewVatOnly}
           onChangeViewRole={handleRolePreviewChange}
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
           onQuickNewJob={handleQuickNewJob}
@@ -303,7 +346,7 @@ const ErpWorkspace: React.FC = () => {
             </div>
           ) : (
             <>
-              {activeSection === 'dashboard' && (
+              {visibleSection === 'dashboard' && (
                 <DashboardView
                   role={effectiveRole}
                   settings={erp.settings}
@@ -326,9 +369,9 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
-              {(activeSection === 'jobs' || activeSection === 'job-cards') && (
+              {(visibleSection === 'jobs' || visibleSection === 'job-cards') && (
                 <JobsView
-                  mode={activeSection}
+                  mode={visibleSection}
                   role={effectiveRole}
                   profile={profile}
                   users={erp.users}
@@ -342,7 +385,7 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
-              {activeSection === 'clients' && (
+              {visibleSection === 'clients' && (
                 <ClientsView
                   settings={erp.settings}
                   clients={erp.clients}
@@ -354,7 +397,7 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
-              {activeSection === 'inventory' && (
+              {visibleSection === 'inventory' && (
                 <InventoryView
                   role={effectiveRole}
                   settings={erp.settings}
@@ -367,7 +410,7 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
-              {activeSection === 'goods-received' && (
+              {visibleSection === 'goods-received' && (
                 <GoodsReceivedView
                   role={effectiveRole}
                   userDisplayName={profile.displayName}
@@ -382,7 +425,7 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
-              {activeSection === 'requisitions' && (
+              {visibleSection === 'requisitions' && (
                 <RequisitionsView
                   role={effectiveRole}
                   profile={profile}
@@ -399,30 +442,35 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
-              {activeSection === 'invoices' && (
+              {visibleSection === 'invoices' && (
                 <InvoicesVatView
                   role={effectiveRole}
+                  taxScope={effectiveTaxScope}
                   settings={erp.settings}
                   chartOfAccounts={erp.chartOfAccounts}
-                  invoices={erp.invoices}
+                  invoices={scopedInvoices}
                   clients={erp.clients}
                   jobs={erp.jobs}
                   prefillJob={prefillInvoiceJob}
                   onClearPrefillJob={() => setPrefillInvoiceJob(null)}
                   onCreateInvoice={erp.createInvoice}
+                  onUpdateInvoice={erp.updateInvoice}
+                  onDeleteInvoice={erp.deleteInvoice}
                   onRecordPayment={erp.recordInvoicePayment}
                   onUpdateStatus={erp.updateInvoiceStatus}
                 />
               )}
 
-              {activeSection === 'supplier-invoices' && (
+              {visibleSection === 'supplier-invoices' && (
                 <SupplierInvoicesView
                   role={effectiveRole}
+                  taxScope={effectiveTaxScope}
                   settings={erp.settings}
                   chartOfAccounts={erp.chartOfAccounts}
-                  supplierInvoices={erp.supplierInvoices}
+                  supplierInvoices={scopedSupplierInvoices}
                   jobs={erp.jobs}
                   onCreateSupplierInvoice={erp.createSupplierInvoice}
+                  onUpdateSupplierInvoice={erp.updateSupplierInvoice}
                   onRecordSupplierPayment={erp.recordSupplierPayment}
                   onUpdateVatStatus={erp.updateSupplierInvoiceVatStatus}
                   onRemitSupplierWht={erp.markSupplierWhtRemitted}
@@ -430,7 +478,7 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
-              {activeSection === 'cash-book' && (
+              {visibleSection === 'cash-book' && (
                 <CashBookView
                   role={effectiveRole}
                   settings={erp.settings}
@@ -439,38 +487,44 @@ const ErpWorkspace: React.FC = () => {
                   invoices={erp.invoices}
                   supplierInvoices={erp.supplierInvoices}
                   onCreateCashBookEntry={erp.createCashBookEntry}
+                  onUpdateCashBookEntry={erp.updateCashBookEntry}
                   onToggleCashBookReconciled={erp.toggleCashBookReconciled}
                   onDeleteCashBookEntry={erp.deleteCashBookEntry}
                 />
               )}
 
-              {activeSection === 'accounting' && (
+              {visibleSection === 'accounting' && (
                 <AccountingView
+                  role={effectiveRole}
+                  taxScope={effectiveTaxScope}
                   settings={erp.settings}
-                  invoices={erp.invoices}
-                  expenses={erp.expenses}
-                  supplierInvoices={erp.supplierInvoices}
+                  invoices={scopedInvoices}
+                  expenses={scopedExpenses}
+                  supplierInvoices={scopedSupplierInvoices}
                   jobs={erp.jobs}
                   onCreateExpense={erp.createExpense}
+                  onUpdateExpense={erp.updateExpense}
+                  onDeleteExpense={erp.deleteExpense}
                   onToggleExpenseStatus={erp.toggleExpensePaymentStatus}
                 />
               )}
 
-              {activeSection === 'reports' && (
+              {visibleSection === 'reports' && (
                 <ReportsView
                   role={effectiveRole}
+                  taxScope={effectiveTaxScope}
                   settings={erp.settings}
                   jobs={erp.jobs}
                   clients={erp.clients}
-                  invoices={erp.invoices}
-                  supplierInvoices={erp.supplierInvoices}
-                  expenses={erp.expenses}
+                  invoices={scopedInvoices}
+                  supplierInvoices={scopedSupplierInvoices}
+                  expenses={scopedExpenses}
                   inventoryItems={erp.inventoryItems}
                   timeEntries={erp.timeEntries}
                 />
               )}
 
-              {activeSection === 'time-tracking' && (
+              {visibleSection === 'time-tracking' && (
                 <TimeTrackingView
                   role={effectiveRole}
                   profile={profile}
@@ -483,7 +537,7 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
-              {activeSection === 'hr' && (
+              {visibleSection === 'hr' && (
                 <HrPayrollView
                   role={effectiveRole}
                   profile={profile}
@@ -499,7 +553,7 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
-              {activeSection === 'my-account' && (
+              {visibleSection === 'my-account' && (
                 <MyAccountView
                   profile={profile}
                   role={effectiveRole}
@@ -519,7 +573,7 @@ const ErpWorkspace: React.FC = () => {
                 />
               )}
 
-              {activeSection === 'settings' && (
+              {visibleSection === 'settings' && (
                 <SettingsTeamView
                   settings={erp.settings}
                   users={erp.users}
@@ -528,6 +582,7 @@ const ErpWorkspace: React.FC = () => {
                   jobs={erp.jobs}
                   onUpdateSettings={erp.updateCompanySettings}
                   onUpdateUserAccess={erp.updateUserAccess}
+                  onSyncZimraVatScope={erp.syncZimraVatScope}
                   onUpdateJobCommission={erp.updateJobCommission}
                   onCreateChartAccount={erp.createChartAccount}
                   onUpdateChartAccount={erp.updateChartAccount}

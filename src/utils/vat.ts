@@ -239,3 +239,52 @@ export function calculateHoursAndLabor(params: {
   const laborCost = round2(regularHours * rate + overtimeHours * rate * 1.5);
   return { totalHours, regularHours, overtimeHours, laborCost };
 }
+
+export function computeInvoiceVatReportable(inv: {
+  status?: string;
+  vatAmount?: number;
+  clientTin?: string;
+  clientVatPin?: string;
+  clientVatReg?: string;
+}): boolean {
+  if (inv.status === 'Draft' || inv.status === 'Void') return false;
+  if (!(Number(inv.vatAmount) > 0)) return false;
+  return Boolean(
+    (inv.clientTin || '').trim() ||
+      (inv.clientVatPin || '').trim() ||
+      (inv.clientVatReg || '').trim()
+  );
+}
+
+export function computeSupplierInvoiceVatReportable(si: {
+  isVatClaimable?: boolean;
+  vatAmount?: number;
+  supplierTin?: string;
+  supplierTaxPin?: string;
+  supplierVatReg?: string;
+}): boolean {
+  if (!si.isVatClaimable) return false;
+  if (!(Number(si.vatAmount) > 0)) return false;
+  return Boolean(
+    (si.supplierTin || '').trim() ||
+      (si.supplierTaxPin || '').trim() ||
+      (si.supplierVatReg || '').trim()
+  );
+}
+
+export function computeExpenseVatReportable(exp: {
+  isVatClaimable?: boolean;
+  vatAmount?: number;
+  vendorTin?: string;
+  vendorVatPin?: string;
+  vendorVatReg?: string;
+}): boolean {
+  if (!exp.isVatClaimable) return false;
+  if (!(Number(exp.vatAmount) > 0)) return false;
+  return Boolean(
+    (exp.vendorTin || '').trim() ||
+      (exp.vendorVatPin || '').trim() ||
+      (exp.vendorVatReg || '').trim()
+  );
+}
+

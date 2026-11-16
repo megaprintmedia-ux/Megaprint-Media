@@ -17,7 +17,9 @@ import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
 import {
   CashBookAccount,
+  CashBookCategory,
   CashBookEntry,
+  CashBookEntryType,
   ChartAccount,
   Client,
   CommissionBasis,
@@ -27,6 +29,7 @@ import {
   DEFAULT_ZIM_CASH_ACCOUNTS,
   Employee,
   Expense,
+  ExpenseCategory,
   GoodsReceipt,
   GoodsReceiptCondition,
   GoodsReceiptLine,
@@ -35,6 +38,8 @@ import {
   InventoryMovementType,
   InventoryStockStatus,
   Invoice,
+  InvoiceLine,
+  InvoiceStatus,
   Job,
   JobCostEntry,
   LeaveRequest,
@@ -42,20 +47,28 @@ import {
   NoteTone,
   OperationalNote,
   PayrollRun,
+  PricingMode,
   Requisition,
   RequisitionLine,
   RequisitionPriority,
   RequisitionStatus,
   RequisitionType,
   SupplierInvoice,
+  SupplierInvoiceCategory,
+  SupplierInvoiceStatus,
+  TaxAccessScope,
   TimeEntry,
   UserInvite,
   UserInviteStatus,
   UserProfile,
+  VatTreatment,
 } from '../types/erp';
 import {
   calculateJobCommission,
   calculateVatBreakdown,
+  computeExpenseVatReportable,
+  computeInvoiceVatReportable,
+  computeSupplierInvoiceVatReportable,
   round2,
   summarizeTaxBreakdown,
 } from '../utils/vat';
@@ -96,12 +109,29 @@ function trimStr(val: string | undefined, max: number): string {
   return (val || '').trim().slice(0, max);
 }
 
+function getCreatedMillis(val: unknown): number {
+  if (
+    val &&
+    typeof val === 'object' &&
+    'toMillis' in val &&
+    typeof (val as { toMillis: () => number }).toMillis === 'function'
+  ) {
+    return (val as { toMillis: () => number }).toMillis();
+  }
+  return 0;
+}
+
 export function useErpData() {
   const { user, profile, authReady } = useAuth();
   const isActiveUser = Boolean(authReady && user && profile?.status === 'active');
   const isManagement = profile?.role === 'management';
-  const isAccountsOrMgmt =
-    profile?.role === 'management' || profile?.role === 'accounts';
+  const isVatAuditorOnly = Boolean(
+    profile?.role === 'accounts' && profile?.taxScope === 'vat_only'
+  );
+  const isAccountsOrMgmt = Boolean(
+    profile?.role === 'management' ||
+      (profile?.role === 'accounts' && profile?.taxScope !== 'vat_only')
+  );
 
   const [settings, setSettings] = useState<CompanySettings>({
     id: 'default',
@@ -192,6 +222,100 @@ export function useErpData() {
           handleFirestoreError(err, OperationType.GET, 'companySettings/default')
       )
     );
+
+    if (isVatAuditorOnly) {
+      setClients([]);
+      setJobs([]);
+      setTimeEntries([]);
+      setLeaveRequests([]);
+      setNotes([]);
+      setInventoryItems([]);
+      setGoodsReceipts([]);
+      setRequisitions([]);
+      setChartOfAccounts([]);
+      setEmployees([]);
+      setPayrollRuns([]);
+      setCashBookEntries([]);
+      setUsers([]);
+      setUserInvites([]);
+
+      unsubs.push(
+        onSnapshot(
+          query(
+            collection(db, 'invoices'),
+            where('vatViewerUids', 'array-contains', user.uid)
+          ),
+          (snap) => {
+            const list = snap.docs
+              .map((d) => ({
+                id: d.id,
+                ...(d.data() as Omit<Invoice, 'id'>),
+              }))
+              .filter((inv) => computeInvoiceVatReportable(inv))
+              .sort(
+                (a, b) =>
+                  getCreatedMillis(b.createdAt) - getCreatedMillis(a.createdAt) ||
+                  (b.issueDate || '').localeCompare(a.issueDate || '')
+              );
+            setInvoices(list);
+            setLoading(false);
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'invoices')
+        )
+      );
+
+      unsubs.push(
+        onSnapshot(
+          query(
+            collection(db, 'supplierInvoices'),
+            where('vatViewerUids', 'array-contains', user.uid)
+          ),
+          (snap) => {
+            const list = snap.docs
+              .map((d) => ({
+                id: d.id,
+                ...(d.data() as Omit<SupplierInvoice, 'id'>),
+              }))
+              .filter((si) => computeSupplierInvoiceVatReportable(si))
+              .sort(
+                (a, b) =>
+                  getCreatedMillis(b.createdAt) - getCreatedMillis(a.createdAt) ||
+                  (b.invoiceDate || '').localeCompare(a.invoiceDate || '')
+              );
+            setSupplierInvoices(list);
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'supplierInvoices')
+        )
+      );
+
+      unsubs.push(
+        onSnapshot(
+          query(
+            collection(db, 'expenses'),
+            where('vatViewerUids', 'array-contains', user.uid)
+          ),
+          (snap) => {
+            const list = snap.docs
+              .map((d) => ({
+                id: d.id,
+                ...(d.data() as Omit<Expense, 'id'>),
+              }))
+              .filter((exp) => computeExpenseVatReportable(exp))
+              .sort(
+                (a, b) =>
+                  getCreatedMillis(b.createdAt) - getCreatedMillis(a.createdAt) ||
+                  (b.expenseDate || '').localeCompare(a.expenseDate || '')
+              );
+            setExpenses(list);
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'expenses')
+        )
+      );
+
+      return () => {
+        unsubs.forEach((fn) => fn());
+      };
+    }
 
     // Clients
     unsubs.push(
@@ -497,33 +621,53 @@ export function useErpData() {
     return () => {
       unsubs.forEach((fn) => fn());
     };
-  }, [isActiveUser, isAccountsOrMgmt, isManagement, user, profile]);
+  }, [isActiveUser, isAccountsOrMgmt, isManagement, isVatAuditorOnly, user, profile]);
 
   const activeStaffUids = useMemo(() => {
     const uidSet = new Set<string>();
-    if (user?.uid) uidSet.add(user.uid);
-    users
-      .filter((u) => u.status === 'active')
-      .forEach((u) => {
-        if (uidSet.size < 10) uidSet.add(u.uid);
-      });
-    return Array.from(uidSet);
-  }, [user?.uid, users]);
-
-  const hrViewerUids = useMemo(() => {
-    const uidSet = new Set<string>();
-    if (user?.uid) uidSet.add(user.uid);
+    if (user?.uid && !isVatAuditorOnly) uidSet.add(user.uid);
     users
       .filter(
         (u) =>
           u.status === 'active' &&
-          (u.role === 'management' || u.role === 'accounts')
+          !(u.role === 'accounts' && u.taxScope === 'vat_only')
       )
       .forEach((u) => {
         if (uidSet.size < 10) uidSet.add(u.uid);
       });
     return Array.from(uidSet);
-  }, [user?.uid, users]);
+  }, [user?.uid, isVatAuditorOnly, users]);
+
+  const hrViewerUids = useMemo(() => {
+    const uidSet = new Set<string>();
+    if (user?.uid && !isVatAuditorOnly) uidSet.add(user.uid);
+    users
+      .filter(
+        (u) =>
+          u.status === 'active' &&
+          (u.role === 'management' ||
+            (u.role === 'accounts' && u.taxScope !== 'vat_only'))
+      )
+      .forEach((u) => {
+        if (uidSet.size < 10) uidSet.add(u.uid);
+      });
+    return Array.from(uidSet);
+  }, [user?.uid, isVatAuditorOnly, users]);
+
+  const vatAuditorUids = useMemo(() => {
+    const uidSet = new Set<string>();
+    users
+      .filter(
+        (u) =>
+          u.status === 'active' &&
+          u.role === 'accounts' &&
+          u.taxScope === 'vat_only'
+      )
+      .forEach((u) => {
+        if (uidSet.size < 10) uidSet.add(u.uid);
+      });
+    return Array.from(uidSet);
+  }, [users]);
 
   const activeAdminUids = useMemo(() => {
     const uidSet = new Set<string>();
@@ -589,18 +733,98 @@ export function useErpData() {
     }
   };
 
+  const syncZimraVatScope = async (overrides?: {
+    vatAuditorUids?: string[];
+    staffUids?: string[];
+    hrViewerUids?: string[];
+  }) => {
+    if (!user || !isManagement) return 0;
+    const targetVatUids = (overrides?.vatAuditorUids ?? vatAuditorUids).slice(0, 10);
+    const targetStaffUids = (overrides?.staffUids ?? activeStaffUids).slice(0, 10);
+    const targetHrUids = (overrides?.hrViewerUids ?? hrViewerUids).slice(0, 10);
+
+    const ops: Array<{ col: string; id: string; data: Record<string, unknown> }> = [];
+
+    invoices.forEach((inv) => {
+      const reportable = computeInvoiceVatReportable(inv);
+      const nextVatUids = reportable ? targetVatUids : [];
+      ops.push({
+        col: 'invoices',
+        id: inv.id,
+        data: {
+          isVatReportable: reportable,
+          vatViewerUids: nextVatUids,
+          staffUids: targetStaffUids,
+          updatedAt: serverTimestamp(),
+        },
+      });
+    });
+
+    supplierInvoices.forEach((si) => {
+      const reportable = computeSupplierInvoiceVatReportable(si);
+      const nextVatUids = reportable ? targetVatUids : [];
+      ops.push({
+        col: 'supplierInvoices',
+        id: si.id,
+        data: {
+          isVatReportable: reportable,
+          vatViewerUids: nextVatUids,
+          viewerUids: targetHrUids,
+          updatedAt: serverTimestamp(),
+        },
+      });
+    });
+
+    expenses.forEach((exp) => {
+      const reportable = computeExpenseVatReportable(exp);
+      const nextVatUids = reportable ? targetVatUids : [];
+      ops.push({
+        col: 'expenses',
+        id: exp.id,
+        data: {
+          isVatReportable: reportable,
+          vatViewerUids: nextVatUids,
+          staffUids: targetStaffUids,
+          updatedAt: serverTimestamp(),
+        },
+      });
+    });
+
+    try {
+      for (let i = 0; i < ops.length; i += 400) {
+        const chunk = ops.slice(i, i + 400);
+        const batch = writeBatch(db);
+        chunk.forEach((op) => {
+          batch.update(doc(db, op.col, op.id), op.data);
+        });
+        await batch.commit();
+      }
+      return ops.length;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'syncZimraVatScope');
+      return 0;
+    }
+  };
+
   const updateUserAccess = async (
     targetUid: string,
     role: UserProfile['role'],
     department: UserProfile['department'],
     status: UserProfile['status'],
-    commissionRatePct?: number
+    commissionRatePct?: number,
+    taxScope?: TaxAccessScope
   ) => {
     try {
+      const targetExisting = users.find((u) => u.uid === targetUid);
+      const effectiveScope: TaxAccessScope =
+        role === 'accounts'
+          ? taxScope ?? targetExisting?.taxScope ?? 'all'
+          : 'all';
       const updates: Record<string, unknown> = {
         role,
         department,
         status,
+        taxScope: effectiveScope,
         updatedAt: serverTimestamp(),
       };
       if (role !== 'sales') {
@@ -612,6 +836,62 @@ export function useErpData() {
         );
       }
       await updateDoc(doc(db, 'users', targetUid), updates);
+
+      // Keep ZIMRA VAT access lists synchronized when taxScope or status changes
+      if (
+        taxScope !== undefined ||
+        (targetExisting &&
+          (targetExisting.role === 'accounts' || role === 'accounts'))
+      ) {
+        const simulatedUsers = users.map((u) =>
+          u.uid === targetUid
+            ? { ...u, role, department, status, taxScope: effectiveScope }
+            : u
+        );
+        const nextVat = simulatedUsers
+          .filter(
+            (u) =>
+              u.status === 'active' &&
+              u.role === 'accounts' &&
+              u.taxScope === 'vat_only'
+          )
+          .map((u) => u.uid)
+          .slice(0, 10);
+        const nextStaff = Array.from(
+          new Set(
+            [
+              ...(user?.uid ? [user.uid] : []),
+              ...simulatedUsers
+                .filter(
+                  (u) =>
+                    u.status === 'active' &&
+                    !(u.role === 'accounts' && u.taxScope === 'vat_only')
+                )
+                .map((u) => u.uid),
+            ].filter(Boolean)
+          )
+        ).slice(0, 10);
+        const nextHr = Array.from(
+          new Set(
+            [
+              ...(user?.uid ? [user.uid] : []),
+              ...simulatedUsers
+                .filter(
+                  (u) =>
+                    u.status === 'active' &&
+                    (u.role === 'management' ||
+                      (u.role === 'accounts' && u.taxScope !== 'vat_only'))
+                )
+                .map((u) => u.uid),
+            ].filter(Boolean)
+          )
+        ).slice(0, 10);
+        await syncZimraVatScope({
+          vatAuditorUids: nextVat,
+          staffUids: nextStaff,
+          hrViewerUids: nextHr,
+        });
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${targetUid}`);
     }
@@ -870,6 +1150,17 @@ export function useErpData() {
       vatAmount: input.vatAmount,
       grossAmount: input.grossAmount,
     });
+    const cleanVatAmount = Math.max(0, round2(input.vatAmount));
+    const cleanClientVatPin = trimStr(input.clientVatPin, 64);
+    const cleanClientTin = trimStr(input.clientTin, 64);
+    const cleanClientVatReg = trimStr(input.clientVatReg, 64);
+    const isVatReportable = computeInvoiceVatReportable({
+      status: input.status,
+      vatAmount: cleanVatAmount,
+      clientTin: cleanClientTin,
+      clientVatPin: cleanClientVatPin,
+      clientVatReg: cleanClientVatReg,
+    });
     try {
       const ref = await addDoc(collection(db, 'invoices'), {
         invoiceNumber: trimStr(input.invoiceNumber, 40),
@@ -877,9 +1168,9 @@ export function useErpData() {
         jobNumber: trimStr(input.jobNumber, 40),
         clientId: input.clientId,
         clientName: trimStr(input.clientName, 160),
-        clientVatPin: trimStr(input.clientVatPin, 64),
-        clientTin: trimStr(input.clientTin, 64),
-        clientVatReg: trimStr(input.clientVatReg, 64),
+        clientVatPin: cleanClientVatPin,
+        clientTin: cleanClientTin,
+        clientVatReg: cleanClientVatReg,
         issueDate: trimStr(input.issueDate, 32),
         dueDate: trimStr(input.dueDate, 32),
         status: input.status,
@@ -896,7 +1187,7 @@ export function useErpData() {
         ),
         exemptAmount: Math.max(0, round2(input.exemptAmount ?? taxSummary.exemptAmount)),
         netAmount: Math.max(0, round2(input.netAmount)),
-        vatAmount: Math.max(0, round2(input.vatAmount)),
+        vatAmount: cleanVatAmount,
         grossAmount: Math.max(0, round2(input.grossAmount)),
         whtRate: Math.max(0, Math.min(50, Number(input.whtRate) || 0)),
         whtWithheldAmount: Math.max(0, round2(Number(input.whtWithheldAmount) || 0)),
@@ -908,12 +1199,102 @@ export function useErpData() {
         notes: trimStr(input.notes, 1000),
         ownerUid: user.uid,
         staffUids: activeStaffUids,
+        isVatReportable,
+        vatViewerUids: isVatReportable ? vatAuditorUids : [],
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
       return ref.id;
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'invoices');
+    }
+  };
+
+  const updateInvoice = async (
+    invoiceId: string,
+    input: {
+      invoiceNumber: string;
+      jobId?: string;
+      jobNumber?: string;
+      clientId: string;
+      clientName: string;
+      clientVatPin?: string;
+      clientTin?: string;
+      clientVatReg?: string;
+      issueDate: string;
+      dueDate: string;
+      status: InvoiceStatus;
+      pricingMode: PricingMode;
+      vatRate: number;
+      lines: InvoiceLine[];
+      whtRate?: number;
+      whtWithheldAmount?: number;
+      whtCertificateRef?: string;
+      amountPaid: number;
+      paymentMethod?: string;
+      paymentReference?: string;
+      notes?: string;
+    }
+  ) => {
+    const boundedLines = input.lines.slice(0, 10);
+    if (boundedLines.length === 0) return;
+    const taxSummary = summarizeTaxBreakdown(boundedLines);
+    const cleanClientVatPin = trimStr(input.clientVatPin, 64);
+    const cleanClientTin = trimStr(input.clientTin, 64);
+    const cleanClientVatReg = trimStr(input.clientVatReg, 64);
+    const cleanPaid = Math.max(0, Math.min(taxSummary.grossAmount, round2(input.amountPaid)));
+    const balanceDue = round2(Math.max(0, taxSummary.grossAmount - cleanPaid));
+    const isVatReportable = computeInvoiceVatReportable({
+      status: input.status,
+      vatAmount: taxSummary.vatAmount,
+      clientTin: cleanClientTin,
+      clientVatPin: cleanClientVatPin,
+      clientVatReg: cleanClientVatReg,
+    });
+    try {
+      await updateDoc(doc(db, 'invoices', invoiceId), {
+        invoiceNumber: trimStr(input.invoiceNumber, 40),
+        jobId: trimStr(input.jobId, 128),
+        jobNumber: trimStr(input.jobNumber, 40),
+        clientId: input.clientId,
+        clientName: trimStr(input.clientName, 160),
+        clientVatPin: cleanClientVatPin,
+        clientTin: cleanClientTin,
+        clientVatReg: cleanClientVatReg,
+        issueDate: trimStr(input.issueDate, 32),
+        dueDate: trimStr(input.dueDate, 32),
+        status: input.status,
+        pricingMode: input.pricingMode,
+        vatRate: Math.max(0, Math.min(50, Number(input.vatRate) || 0)),
+        lines: boundedLines,
+        standardNetAmount: taxSummary.standardNetAmount,
+        zeroRatedAmount: taxSummary.zeroRatedAmount,
+        exemptAmount: taxSummary.exemptAmount,
+        netAmount: taxSummary.netAmount,
+        vatAmount: taxSummary.vatAmount,
+        grossAmount: taxSummary.grossAmount,
+        whtRate: Math.max(0, Math.min(50, Number(input.whtRate) || 0)),
+        whtWithheldAmount: Math.max(0, round2(Number(input.whtWithheldAmount) || 0)),
+        whtCertificateRef: trimStr(input.whtCertificateRef, 120),
+        amountPaid: cleanPaid,
+        balanceDue,
+        paymentMethod: trimStr(input.paymentMethod, 60),
+        paymentReference: trimStr(input.paymentReference, 120),
+        notes: trimStr(input.notes, 1000),
+        isVatReportable,
+        vatViewerUids: isVatReportable ? vatAuditorUids : [],
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `invoices/${invoiceId}`);
+    }
+  };
+
+  const deleteInvoice = async (invoiceId: string) => {
+    try {
+      await deleteDoc(doc(db, 'invoices', invoiceId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `invoices/${invoiceId}`);
     }
   };
 
@@ -947,6 +1328,13 @@ export function useErpData() {
         : cleanWht > 0 && invoice.netAmount > 0
           ? round2((cleanWht / invoice.netAmount) * 100)
           : invoice.whtRate || 0;
+    const isVatReportable = computeInvoiceVatReportable({
+      status: nextStatus,
+      vatAmount: invoice.vatAmount,
+      clientTin: invoice.clientTin,
+      clientVatPin: invoice.clientVatPin,
+      clientVatReg: invoice.clientVatReg,
+    });
 
     try {
       const batch = writeBatch(db);
@@ -956,6 +1344,8 @@ export function useErpData() {
         status: nextStatus,
         paymentMethod: trimStr(method, 60),
         paymentReference: trimStr(reference, 120),
+        isVatReportable,
+        vatViewerUids: isVatReportable ? vatAuditorUids : [],
         updatedAt: serverTimestamp(),
       };
       if (cleanWht > 0 || options?.whtCertificateRef) {
@@ -1019,9 +1409,21 @@ export function useErpData() {
   };
 
   const updateInvoiceStatus = async (invoiceId: string, status: Invoice['status']) => {
+    const targetInv = invoices.find((i) => i.id === invoiceId);
+    const isVatReportable = targetInv
+      ? computeInvoiceVatReportable({
+          status,
+          vatAmount: targetInv.vatAmount,
+          clientTin: targetInv.clientTin,
+          clientVatPin: targetInv.clientVatPin,
+          clientVatReg: targetInv.clientVatReg,
+        })
+      : status !== 'Draft' && status !== 'Void';
     try {
       await updateDoc(doc(db, 'invoices', invoiceId), {
         status,
+        isVatReportable,
+        vatViewerUids: isVatReportable ? vatAuditorUids : [],
         updatedAt: serverTimestamp(),
       });
     } catch (error) {
@@ -1035,22 +1437,34 @@ export function useErpData() {
     if (!user) return;
     const treatment =
       input.vatTreatment ?? (input.isVatClaimable ? 'standard' : 'exempt');
+    const cleanClaimable = Boolean(input.isVatClaimable && treatment === 'standard');
+    const cleanVatAmount = Math.max(0, round2(input.vatAmount));
+    const cleanVendorVatPin = trimStr(input.vendorVatPin, 64);
+    const cleanVendorTin = trimStr(input.vendorTin, 64);
+    const cleanVendorVatReg = trimStr(input.vendorVatReg, 64);
+    const isVatReportable = computeExpenseVatReportable({
+      isVatClaimable: cleanClaimable,
+      vatAmount: cleanVatAmount,
+      vendorTin: cleanVendorTin,
+      vendorVatPin: cleanVendorVatPin,
+      vendorVatReg: cleanVendorVatReg,
+    });
     try {
       await addDoc(collection(db, 'expenses'), {
         expenseNumber: trimStr(input.expenseNumber, 40),
         vendorName: trimStr(input.vendorName, 160),
-        vendorVatPin: trimStr(input.vendorVatPin, 64),
-        vendorTin: trimStr(input.vendorTin, 64),
-        vendorVatReg: trimStr(input.vendorVatReg, 64),
+        vendorVatPin: cleanVendorVatPin,
+        vendorTin: cleanVendorTin,
+        vendorVatReg: cleanVendorVatReg,
         vendorInvoiceRef: trimStr(input.vendorInvoiceRef, 80),
         category: input.category,
         jobId: trimStr(input.jobId, 128),
         expenseDate: trimStr(input.expenseDate, 32),
         vatTreatment: treatment,
-        isVatClaimable: Boolean(input.isVatClaimable && treatment === 'standard'),
+        isVatClaimable: cleanClaimable,
         vatRate: Math.max(0, Math.min(50, Number(input.vatRate) || 0)),
         netAmount: Math.max(0, round2(input.netAmount)),
-        vatAmount: Math.max(0, round2(input.vatAmount)),
+        vatAmount: cleanVatAmount,
         grossAmount: Math.max(0, round2(input.grossAmount)),
         whtApplicable: Boolean(input.whtApplicable),
         whtRate: Math.max(0, Math.min(50, Number(input.whtRate) || 0)),
@@ -1059,11 +1473,91 @@ export function useErpData() {
         notes: trimStr(input.notes, 1000),
         ownerUid: user.uid,
         staffUids: activeStaffUids,
+        isVatReportable,
+        vatViewerUids: isVatReportable ? vatAuditorUids : [],
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'expenses');
+    }
+  };
+
+  const updateExpense = async (
+    expenseId: string,
+    input: {
+      expenseNumber: string;
+      vendorName: string;
+      vendorVatPin?: string;
+      vendorTin?: string;
+      vendorVatReg?: string;
+      vendorInvoiceRef?: string;
+      category: ExpenseCategory;
+      jobId?: string;
+      expenseDate: string;
+      vatTreatment: VatTreatment;
+      isVatClaimable: boolean;
+      vatRate: number;
+      netAmount: number;
+      vatAmount: number;
+      grossAmount: number;
+      whtApplicable?: boolean;
+      whtRate?: number;
+      whtAmount?: number;
+      paymentStatus: 'Paid' | 'Payable';
+      notes?: string;
+    }
+  ) => {
+    const cleanClaimable = Boolean(
+      input.isVatClaimable && input.vatTreatment === 'standard'
+    );
+    const cleanVatAmount = Math.max(0, round2(input.vatAmount));
+    const cleanVendorVatPin = trimStr(input.vendorVatPin, 64);
+    const cleanVendorTin = trimStr(input.vendorTin, 64);
+    const cleanVendorVatReg = trimStr(input.vendorVatReg, 64);
+    const isVatReportable = computeExpenseVatReportable({
+      isVatClaimable: cleanClaimable,
+      vatAmount: cleanVatAmount,
+      vendorTin: cleanVendorTin,
+      vendorVatPin: cleanVendorVatPin,
+      vendorVatReg: cleanVendorVatReg,
+    });
+    try {
+      await updateDoc(doc(db, 'expenses', expenseId), {
+        expenseNumber: trimStr(input.expenseNumber, 40),
+        vendorName: trimStr(input.vendorName, 160),
+        vendorVatPin: cleanVendorVatPin,
+        vendorTin: cleanVendorTin,
+        vendorVatReg: cleanVendorVatReg,
+        vendorInvoiceRef: trimStr(input.vendorInvoiceRef, 80),
+        category: input.category,
+        jobId: trimStr(input.jobId, 128),
+        expenseDate: trimStr(input.expenseDate, 32),
+        vatTreatment: input.vatTreatment,
+        isVatClaimable: cleanClaimable,
+        vatRate: Math.max(0, Math.min(50, Number(input.vatRate) || 0)),
+        netAmount: Math.max(0, round2(input.netAmount)),
+        vatAmount: cleanVatAmount,
+        grossAmount: Math.max(0, round2(input.grossAmount)),
+        whtApplicable: Boolean(input.whtApplicable),
+        whtRate: Math.max(0, Math.min(50, Number(input.whtRate) || 0)),
+        whtAmount: Math.max(0, round2(Number(input.whtAmount) || 0)),
+        paymentStatus: input.paymentStatus,
+        notes: trimStr(input.notes, 1000),
+        isVatReportable,
+        vatViewerUids: isVatReportable ? vatAuditorUids : [],
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `expenses/${expenseId}`);
+    }
+  };
+
+  const deleteExpense = async (expenseId: string) => {
+    try {
+      await deleteDoc(doc(db, 'expenses', expenseId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `expenses/${expenseId}`);
     }
   };
 
@@ -1299,15 +1793,26 @@ export function useErpData() {
       vatAmount: input.vatAmount,
       grossAmount: input.grossAmount,
     });
+    const cleanTaxPin = trimStr(input.supplierTaxPin, 64);
+    const cleanTin = trimStr(input.supplierTin, 64);
     const cleanVatReg = trimStr(input.supplierVatReg, 64);
+    const cleanVatAmount = Math.max(0, round2(input.vatAmount));
+    const cleanClaimable = Boolean(input.isVatClaimable);
+    const isVatReportable = computeSupplierInvoiceVatReportable({
+      isVatClaimable: cleanClaimable,
+      vatAmount: cleanVatAmount,
+      supplierTin: cleanTin,
+      supplierTaxPin: cleanTaxPin,
+      supplierVatReg: cleanVatReg,
+    });
     try {
       const ref = await addDoc(collection(db, 'supplierInvoices'), {
         recordNumber: trimStr(input.recordNumber, 40),
         supplierName: trimStr(input.supplierName, 160),
-        supplierTaxPin: trimStr(input.supplierTaxPin, 64),
-        supplierTin: trimStr(input.supplierTin, 64),
+        supplierTaxPin: cleanTaxPin,
+        supplierTin: cleanTin,
         supplierVatReg: cleanVatReg,
-        isVatRegistered: Boolean(input.isVatRegistered ?? Boolean(cleanVatReg || input.supplierTaxPin)),
+        isVatRegistered: Boolean(input.isVatRegistered ?? Boolean(cleanVatReg || cleanTaxPin || cleanTin)),
         supplierInvoiceNo: trimStr(input.supplierInvoiceNo, 80),
         category: input.category,
         jobId: trimStr(input.jobId, 128),
@@ -1316,7 +1821,7 @@ export function useErpData() {
         dueDate: trimStr(input.dueDate, 32),
         pricingMode: input.pricingMode,
         vatTreatment: input.vatTreatment,
-        isVatClaimable: Boolean(input.isVatClaimable),
+        isVatClaimable: cleanClaimable,
         vatRate: Math.max(0, Math.min(50, Number(input.vatRate) || 0)),
         lines: boundedLines,
         standardNetAmount: Math.max(
@@ -1329,7 +1834,7 @@ export function useErpData() {
         ),
         exemptAmount: Math.max(0, round2(input.exemptAmount ?? taxSummary.exemptAmount)),
         netAmount: Math.max(0, round2(input.netAmount)),
-        vatAmount: Math.max(0, round2(input.vatAmount)),
+        vatAmount: cleanVatAmount,
         grossAmount: Math.max(0, round2(input.grossAmount)),
         whtApplicable: Boolean(input.whtApplicable),
         whtRate: Math.max(0, Math.min(50, Number(input.whtRate) || 0)),
@@ -1343,12 +1848,116 @@ export function useErpData() {
         notes: trimStr(input.notes, 1000),
         ownerUid: user.uid,
         viewerUids: hrViewerUids,
+        isVatReportable,
+        vatViewerUids: isVatReportable ? vatAuditorUids : [],
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
       return ref.id;
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'supplierInvoices');
+    }
+  };
+
+  const updateSupplierInvoice = async (
+    supplierInvoiceId: string,
+    input: {
+      recordNumber: string;
+      supplierName: string;
+      supplierTaxPin?: string;
+      supplierTin?: string;
+      supplierVatReg?: string;
+      isVatRegistered?: boolean;
+      supplierInvoiceNo: string;
+      category: SupplierInvoiceCategory;
+      jobId?: string;
+      jobNumber?: string;
+      invoiceDate: string;
+      dueDate: string;
+      pricingMode: PricingMode;
+      vatTreatment: VatTreatment;
+      isVatClaimable: boolean;
+      vatRate: number;
+      lines: InvoiceLine[];
+      whtApplicable?: boolean;
+      whtRate?: number;
+      whtAmount?: number;
+      whtRemitted?: boolean;
+      amountPaid: number;
+      status: SupplierInvoiceStatus;
+      paymentMethod?: string;
+      paymentReference?: string;
+      notes?: string;
+    }
+  ) => {
+    const boundedLines = input.lines.slice(0, 10);
+    if (boundedLines.length === 0) return;
+    const taxSummary = summarizeTaxBreakdown(boundedLines, {
+      vatTreatment: input.vatTreatment,
+      netAmount: 0,
+      vatAmount: 0,
+      grossAmount: 0,
+    });
+    const cleanTaxPin = trimStr(input.supplierTaxPin, 64);
+    const cleanTin = trimStr(input.supplierTin, 64);
+    const cleanVatReg = trimStr(input.supplierVatReg, 64);
+    const cleanPaid = Math.max(0, Math.min(taxSummary.grossAmount, round2(input.amountPaid)));
+    const balanceDue = round2(Math.max(0, taxSummary.grossAmount - cleanPaid));
+    const cleanClaimable = Boolean(input.isVatClaimable && taxSummary.vatAmount > 0);
+    const isVatReportable = computeSupplierInvoiceVatReportable({
+      isVatClaimable: cleanClaimable,
+      vatAmount: taxSummary.vatAmount,
+      supplierTin: cleanTin,
+      supplierTaxPin: cleanTaxPin,
+      supplierVatReg: cleanVatReg,
+    });
+    try {
+      await updateDoc(doc(db, 'supplierInvoices', supplierInvoiceId), {
+        recordNumber: trimStr(input.recordNumber, 40),
+        supplierName: trimStr(input.supplierName, 160),
+        supplierTaxPin: cleanTaxPin,
+        supplierTin: cleanTin,
+        supplierVatReg: cleanVatReg,
+        isVatRegistered: Boolean(
+          input.isVatRegistered ?? Boolean(cleanVatReg || cleanTaxPin || cleanTin)
+        ),
+        supplierInvoiceNo: trimStr(input.supplierInvoiceNo, 80),
+        category: input.category,
+        jobId: trimStr(input.jobId, 128),
+        jobNumber: trimStr(input.jobNumber, 40),
+        invoiceDate: trimStr(input.invoiceDate, 32),
+        dueDate: trimStr(input.dueDate, 32),
+        pricingMode: input.pricingMode,
+        vatTreatment: input.vatTreatment,
+        isVatClaimable: cleanClaimable,
+        vatRate: Math.max(0, Math.min(50, Number(input.vatRate) || 0)),
+        lines: boundedLines,
+        standardNetAmount: taxSummary.standardNetAmount,
+        zeroRatedAmount: taxSummary.zeroRatedAmount,
+        exemptAmount: taxSummary.exemptAmount,
+        netAmount: taxSummary.netAmount,
+        vatAmount: taxSummary.vatAmount,
+        grossAmount: taxSummary.grossAmount,
+        whtApplicable: Boolean(input.whtApplicable),
+        whtRate: Math.max(0, Math.min(50, Number(input.whtRate) || 0)),
+        whtAmount: Math.max(0, round2(Number(input.whtAmount) || 0)),
+        whtRemitted: Boolean(input.whtRemitted),
+        amountPaid: cleanPaid,
+        balanceDue,
+        status: input.status,
+        paymentMethod: trimStr(input.paymentMethod, 60),
+        paymentReference: trimStr(input.paymentReference, 120),
+        notes: trimStr(input.notes, 1000),
+        isVatReportable,
+        vatViewerUids: isVatReportable ? vatAuditorUids : [],
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `supplierInvoices/${supplierInvoiceId}`
+      );
     }
   };
 
@@ -1507,6 +2116,7 @@ export function useErpData() {
     >
   ) => {
     try {
+      const targetSi = supplierInvoices.find((s) => s.id === supplierInvoiceId);
       const clean: Record<string, unknown> = { updatedAt: serverTimestamp() };
       if (updates.status !== undefined) clean.status = updates.status;
       if (updates.isVatClaimable !== undefined)
@@ -1528,6 +2138,20 @@ export function useErpData() {
       if (updates.whtRemitted !== undefined)
         clean.whtRemitted = Boolean(updates.whtRemitted);
       if (updates.notes !== undefined) clean.notes = trimStr(updates.notes, 1000);
+
+      if (targetSi) {
+        const isVatReportable = computeSupplierInvoiceVatReportable({
+          isVatClaimable:
+            updates.isVatClaimable ?? targetSi.isVatClaimable,
+          vatAmount: targetSi.vatAmount,
+          supplierTin: updates.supplierTin ?? targetSi.supplierTin,
+          supplierTaxPin: updates.supplierTaxPin ?? targetSi.supplierTaxPin,
+          supplierVatReg: updates.supplierVatReg ?? targetSi.supplierVatReg,
+        });
+        clean.isVatReportable = isVatReportable;
+        clean.vatViewerUids = isVatReportable ? vatAuditorUids : [];
+      }
+
       await updateDoc(doc(db, 'supplierInvoices', supplierInvoiceId), clean);
     } catch (error) {
       handleFirestoreError(
@@ -1816,20 +2440,64 @@ export function useErpData() {
   const updateGoodsReceipt = async (
     grnId: string,
     updates: Partial<{
+      grnNumber: string;
+      supplierName: string;
+      deliveryNoteRef: string;
       conditionStatus: GoodsReceiptCondition;
       supplierInvoiceId: string;
       supplierInvoiceNo: string;
+      jobId: string;
+      jobNumber: string;
+      receivedDate: string;
+      receivedByName: string;
+      items: GoodsReceiptLine[];
+      postToInventory: boolean;
       notes: string;
     }>
   ) => {
     try {
       const clean: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (updates.grnNumber !== undefined)
+        clean.grnNumber = trimStr(updates.grnNumber, 40);
+      if (updates.supplierName !== undefined)
+        clean.supplierName = trimStr(updates.supplierName, 160);
+      if (updates.deliveryNoteRef !== undefined)
+        clean.deliveryNoteRef = trimStr(updates.deliveryNoteRef, 80);
       if (updates.conditionStatus !== undefined)
         clean.conditionStatus = updates.conditionStatus;
       if (updates.supplierInvoiceId !== undefined)
         clean.supplierInvoiceId = trimStr(updates.supplierInvoiceId, 128);
       if (updates.supplierInvoiceNo !== undefined)
         clean.supplierInvoiceNo = trimStr(updates.supplierInvoiceNo, 80);
+      if (updates.jobId !== undefined) clean.jobId = trimStr(updates.jobId, 128);
+      if (updates.jobNumber !== undefined)
+        clean.jobNumber = trimStr(updates.jobNumber, 40);
+      if (updates.receivedDate !== undefined)
+        clean.receivedDate = trimStr(updates.receivedDate, 32);
+      if (updates.receivedByName !== undefined)
+        clean.receivedByName = trimStr(updates.receivedByName, 120);
+      if (updates.postToInventory !== undefined)
+        clean.postToInventory = Boolean(updates.postToInventory);
+      if (updates.items !== undefined && updates.items.length > 0) {
+        const cleanItems: GoodsReceiptLine[] = updates.items
+          .slice(0, 10)
+          .map((line) => ({
+            inventoryItemId: trimStr(line.inventoryItemId, 128),
+            sku: trimStr(line.sku, 40),
+            description: trimStr(line.description, 200) || 'Delivered Item',
+            quantityOrdered: Math.max(0, round2(Number(line.quantityOrdered) || 0)),
+            quantityReceived: Math.max(0, round2(Number(line.quantityReceived) || 0)),
+            unit: trimStr(line.unit, 32) || 'Pcs',
+            unitCost: Math.max(0, round2(Number(line.unitCost) || 0)),
+          }));
+        clean.items = cleanItems;
+        clean.totalValue = round2(
+          cleanItems.reduce(
+            (acc, line) => acc + line.quantityReceived * line.unitCost,
+            0
+          )
+        );
+      }
       if (updates.notes !== undefined) clean.notes = trimStr(updates.notes, 1000);
       await updateDoc(doc(db, 'goodsReceipts', grnId), clean);
     } catch (error) {
@@ -2147,6 +2815,48 @@ export function useErpData() {
     }
   };
 
+  const updateCashBookEntry = async (
+    entryId: string,
+    input: {
+      entryNumber: string;
+      entryDate: string;
+      entryType: CashBookEntryType;
+      account: CashBookAccount;
+      counterparty: string;
+      category: CashBookCategory;
+      reference: string;
+      linkedDocRef: string;
+      amount: number;
+      reconciled: boolean;
+      notes: string;
+    }
+  ) => {
+    const cleanAmount = round2(Number(input.amount) || 0);
+    if (cleanAmount <= 0) return;
+    try {
+      await updateDoc(doc(db, 'cashBookEntries', entryId), {
+        entryNumber: trimStr(input.entryNumber, 40),
+        entryDate: trimStr(input.entryDate, 32),
+        entryType: input.entryType,
+        account: trimStr(input.account, 120),
+        counterparty: trimStr(input.counterparty, 160),
+        category: input.category,
+        reference: trimStr(input.reference, 120),
+        linkedDocRef: trimStr(input.linkedDocRef, 80),
+        amount: cleanAmount,
+        reconciled: Boolean(input.reconciled),
+        notes: trimStr(input.notes, 500),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `cashBookEntries/${entryId}`
+      );
+    }
+  };
+
   const toggleCashBookReconciled = async (entry: CashBookEntry) => {
     try {
       await updateDoc(doc(db, 'cashBookEntries', entry.id), {
@@ -2450,17 +3160,21 @@ export function useErpData() {
     displayName: string;
     role: UserProfile['role'];
     department: UserProfile['department'];
+    taxScope?: TaxAccessScope;
     commissionRatePct: number;
   }) => {
     if (!user || !profile) return;
     const normalizedEmail = trimStr(input.email, 200).toLowerCase();
     if (!normalizedEmail) return;
+    const resolvedScope: TaxAccessScope =
+      input.role === 'accounts' ? input.taxScope || 'all' : 'all';
     try {
       const ref = await addDoc(collection(db, 'userInvites'), {
         email: normalizedEmail,
         displayName: trimStr(input.displayName, 120) || normalizedEmail,
         role: input.role,
         department: input.department,
+        taxScope: resolvedScope,
         commissionRatePct:
           input.role === 'sales'
             ? Math.max(0, Math.min(50, round2(Number(input.commissionRatePct) || 0)))
@@ -3110,6 +3824,8 @@ export function useErpData() {
         notes: 'Settled in full on delivery. Fiscalized ZIMRA FDMS receipt issued.',
         ownerUid: user.uid,
         staffUids,
+        isVatReportable: true,
+        vatViewerUids: vatAuditorUids,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -3157,6 +3873,8 @@ export function useErpData() {
         notes: '50% production deposit received via EcoCash.',
         ownerUid: user.uid,
         staffUids,
+        isVatReportable: true,
+        vatViewerUids: vatAuditorUids,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -3192,6 +3910,8 @@ export function useErpData() {
         notes: '240gsm cotton pique rolls for Msasa Logistics order',
         ownerUid: user.uid,
         staffUids,
+        isVatReportable: true,
+        vatViewerUids: vatAuditorUids,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -3226,6 +3946,8 @@ export function useErpData() {
         notes: '300gsm art card, CMYK offset inks & PVC banner media',
         ownerUid: user.uid,
         staffUids,
+        isVatReportable: true,
+        vatViewerUids: vatAuditorUids,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -3254,6 +3976,8 @@ export function useErpData() {
         notes: 'Workington print floor & tailoring studio monthly lease (VAT Exempt)',
         ownerUid: user.uid,
         staffUids,
+        isVatReportable: false,
+        vatViewerUids: [],
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -3499,6 +4223,8 @@ export function useErpData() {
         notes: 'Valid ZIMRA fiscalized supplier tax invoice verified for Input VAT claim.',
         ownerUid: user.uid,
         viewerUids: hrUids,
+        isVatReportable: true,
+        vatViewerUids: vatAuditorUids,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -3556,6 +4282,8 @@ export function useErpData() {
         notes: '50% supplier deposit cleared; balance due on wrap film delivery.',
         ownerUid: user.uid,
         viewerUids: hrUids,
+        isVatReportable: true,
+        vatViewerUids: vatAuditorUids,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -3808,6 +4536,7 @@ export function useErpData() {
     notes,
     updateCompanySettings,
     updateUserAccess,
+    syncZimraVatScope,
     createChartAccount,
     updateChartAccount,
     deleteChartAccount,
@@ -3825,11 +4554,16 @@ export function useErpData() {
     addJobCostEntry,
     subscribeJobCosts,
     createInvoice,
+    updateInvoice,
+    deleteInvoice,
     recordInvoicePayment,
     updateInvoiceStatus,
     createExpense,
+    updateExpense,
+    deleteExpense,
     toggleExpensePaymentStatus,
     createSupplierInvoice,
+    updateSupplierInvoice,
     recordSupplierPayment,
     markSupplierWhtRemitted,
     updateSupplierInvoiceVatStatus,
@@ -3847,6 +4581,7 @@ export function useErpData() {
     fulfillRequisition,
     deleteRequisition,
     createCashBookEntry,
+    updateCashBookEntry,
     toggleCashBookReconciled,
     deleteCashBookEntry,
     createEmployee,

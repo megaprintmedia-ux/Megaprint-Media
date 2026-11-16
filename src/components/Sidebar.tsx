@@ -18,13 +18,14 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { CompanySettings, NavSection, UserRole } from '../types/erp';
+import { CompanySettings, NavSection, TaxAccessScope, UserRole } from '../types/erp';
 import { BrandLogo } from './BrandLogo';
 
 interface SidebarProps {
   activeSection: NavSection;
   onSelect: (section: NavSection) => void;
   role: UserRole;
+  taxScope?: TaxAccessScope;
   settings: CompanySettings;
   mobileOpen: boolean;
   onCloseMobile: () => void;
@@ -153,15 +154,28 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+const VAT_ONLY_ALLOWED_SECTIONS: NavSection[] = [
+  'invoices',
+  'supplier-invoices',
+  'accounting',
+  'reports',
+];
+
 export const Sidebar: React.FC<SidebarProps> = ({
   activeSection,
   onSelect,
   role,
+  taxScope = 'all',
   settings,
   mobileOpen,
   onCloseMobile,
 }) => {
-  const visibleItems = NAV_ITEMS.filter((item) => item.roles.includes(role));
+  const isVatOnly = role === 'accounts' && taxScope === 'vat_only';
+  const visibleItems = NAV_ITEMS.filter(
+    (item) =>
+      item.roles.includes(role) &&
+      (!isVatOnly || VAT_ONLY_ALLOWED_SECTIONS.includes(item.id))
+  );
   const groups: Array<NavItem['group']> = [
     'Operations',
     'Finance & VAT',
@@ -236,6 +250,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="font-medium text-slate-300 truncate">
           {settings.companyName} Operations
         </div>
+        {isVatOnly && (
+          <div className="text-[11px] font-medium text-amber-300 pb-0.5">
+            ZIMRA VAT-Only · Read-Only
+          </div>
+        )}
         <div className="flex items-center justify-between font-mono-nums">
           <span>VAT Rate</span>
           <span className="text-slate-200">{settings.defaultVatRate}%</span>

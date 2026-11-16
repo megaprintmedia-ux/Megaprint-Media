@@ -9,6 +9,7 @@ import {
   Job,
   ServiceCategory,
   SupplierInvoice,
+  TaxAccessScope,
   TimeEntry,
   UserRole,
 } from '../types/erp';
@@ -23,6 +24,7 @@ import { StatusText } from './StatusText';
 
 interface ReportsViewProps {
   role: UserRole;
+  taxScope?: TaxAccessScope;
   settings: CompanySettings;
   jobs: Job[];
   clients: Client[];
@@ -60,6 +62,7 @@ function extractIsoDate(timestampVal: unknown, fallback?: string): string {
 
 export const ReportsView: React.FC<ReportsViewProps> = ({
   role,
+  taxScope = 'all',
   settings,
   jobs,
   clients,
@@ -69,10 +72,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   inventoryItems,
   timeEntries,
 }) => {
+  const isVatOnly = role === 'accounts' && taxScope === 'vat_only';
   const canViewFinance = role === 'management' || role === 'accounts';
   const [activeTab, setActiveTab] = useState<ReportTab>(
-    canViewFinance ? 'financial' : 'operations'
+    isVatOnly ? 'vat-audit' : canViewFinance ? 'financial' : 'operations'
   );
+  const effectiveTab: ReportTab = isVatOnly ? 'vat-audit' : activeTab;
   const [fromDate, setFromDate] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
@@ -290,9 +295,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
   const handleExportReportCsv = () => {
     let rows: string[][] = [];
-    const filename = `megaprint-report-${activeTab}-${new Date().toISOString().slice(0, 10)}.csv`;
+    const filename = `megaprint-report-${effectiveTab}-${new Date().toISOString().slice(0, 10)}.csv`;
 
-    if (activeTab === 'financial') {
+    if (effectiveTab === 'financial') {
       rows = [
         ['Client', 'Jobs Count', 'Invoices Count', 'Net Revenue', 'Outstanding Balance'],
         ...reportData.clientSummary.map((r) => [
@@ -303,7 +308,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           r.balance.toFixed(2),
         ]),
       ];
-    } else if (activeTab === 'job-costing') {
+    } else if (effectiveTab === 'job-costing') {
       rows = [
         [
           'Job #',
@@ -328,7 +333,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           costing.grossMarginPct.toFixed(1),
         ]),
       ];
-    } else if (activeTab === 'vat-audit') {
+    } else if (effectiveTab === 'vat-audit') {
       rows = [
         [
           'Direction',
@@ -493,16 +498,29 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         </div>
       </div>
 
+      {/* ZIMRA VAT-Only Notice */}
+      {isVatOnly && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900 flex flex-wrap items-center justify-between gap-2 no-print">
+          <div>
+            <strong>ZIMRA / VAT-Only Auditor Mode (Read-Only):</strong> Only VAT
+            &amp; WHT schedules for fiscalized transactions with VAT and a valid ZIMRA
+            TIN / VAT Reg # are shown. Internal non-VAT sales, bills, and operational
+            margins are hidden.
+          </div>
+          <span className="font-mono-nums font-semibold">ZIMRA Compliance View</span>
+        </div>
+      )}
+
       {/* Controls Bar */}
       <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3 no-print">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-md overflow-x-auto">
-            {canViewFinance && (
+            {canViewFinance && !isVatOnly && (
               <button
                 type="button"
                 onClick={() => setActiveTab('financial')}
                 className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  activeTab === 'financial'
+                  effectiveTab === 'financial'
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
@@ -510,23 +528,25 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 Executive &amp; Financial
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => setActiveTab('job-costing')}
-              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                activeTab === 'job-costing'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Job Costing &amp; Margin
-            </button>
+            {!isVatOnly && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('job-costing')}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  effectiveTab === 'job-costing'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Job Costing &amp; Margin
+              </button>
+            )}
             {canViewFinance && (
               <button
                 type="button"
                 onClick={() => setActiveTab('vat-audit')}
                 className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  activeTab === 'vat-audit'
+                  effectiveTab === 'vat-audit'
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
@@ -534,17 +554,19 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 VAT &amp; WHT Audit Schedule
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => setActiveTab('operations')}
-              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                activeTab === 'operations'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Production, Stock &amp; Hours
-            </button>
+            {!isVatOnly && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('operations')}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  effectiveTab === 'operations'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Production, Stock &amp; Hours
+              </button>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -618,7 +640,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       </div>
 
       {/* Tab 1: Executive & Financial */}
-      {activeTab === 'financial' && canViewFinance && (
+      {effectiveTab === 'financial' && canViewFinance && !isVatOnly && (
         <div className="space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <div className="bg-white border border-slate-200 rounded-lg p-5">
@@ -713,7 +735,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       )}
 
       {/* Tab 2: Job Costing & Margin */}
-      {activeTab === 'job-costing' && (
+      {effectiveTab === 'job-costing' && !isVatOnly && (
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           <div className="px-5 py-3.5 border-b border-slate-200 font-display text-sm font-semibold text-slate-900">
             Job Cost Variance &amp; Profitability Report ({reportData.jobCostRows.length}{' '}
@@ -796,7 +818,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       )}
 
       {/* Tab 3: VAT & WHT Audit Schedule */}
-      {activeTab === 'vat-audit' && canViewFinance && (
+      {effectiveTab === 'vat-audit' && canViewFinance && (
         <div className="space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             <div className="bg-white border border-slate-200 rounded-lg p-5">
@@ -951,7 +973,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       )}
 
       {/* Tab 4: Production, Stock & Hours */}
-      {activeTab === 'operations' && (
+      {effectiveTab === 'operations' && !isVatOnly && (
         <div className="space-y-5">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
             <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">

@@ -1,5 +1,7 @@
 export type UserRole = 'management' | 'sales' | 'accounts' | 'production';
 
+export type TaxAccessScope = 'all' | 'vat_only';
+
 export type Department = 'Management' | 'Sales & Marketing' | 'Accounts' | 'Production';
 
 export type ServiceCategory = 'Printing' | 'Branding' | 'Corporate Wear' | 'Tailoring';
@@ -63,6 +65,7 @@ export interface UserProfile {
   role: UserRole;
   department: Department;
   status: 'active' | 'pending' | 'disabled';
+  taxScope?: TaxAccessScope;
   commissionRatePct?: number;
   inviteId?: string;
   adminUids?: string[];
@@ -230,6 +233,8 @@ export interface Invoice {
   notes: string;
   ownerUid: string;
   staffUids: string[];
+  isVatReportable?: boolean;
+  vatViewerUids?: string[];
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -258,6 +263,8 @@ export interface Expense {
   notes: string;
   ownerUid: string;
   staffUids: string[];
+  isVatReportable?: boolean;
+  vatViewerUids?: string[];
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -408,6 +415,8 @@ export interface SupplierInvoice {
   notes: string;
   ownerUid: string;
   viewerUids: string[];
+  isVatReportable?: boolean;
+  vatViewerUids?: string[];
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -589,6 +598,7 @@ export interface UserInvite {
   displayName: string;
   role: UserRole;
   department: Department;
+  taxScope?: TaxAccessScope;
   commissionRatePct: number;
   status: UserInviteStatus;
   invitedByName: string;

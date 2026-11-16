@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   Download,
+  Pencil,
   Plus,
   Printer,
   Search,
@@ -35,6 +36,22 @@ interface CashBookViewProps {
       'id' | 'recordedByName' | 'ownerUid' | 'viewerUids' | 'createdAt' | 'updatedAt'
     >
   ) => Promise<string | undefined>;
+  onUpdateCashBookEntry?: (
+    entryId: string,
+    input: {
+      entryNumber: string;
+      entryDate: string;
+      entryType: CashBookEntryType;
+      account: CashBookAccount;
+      counterparty: string;
+      category: CashBookCategory;
+      reference: string;
+      linkedDocRef: string;
+      amount: number;
+      reconciled: boolean;
+      notes: string;
+    }
+  ) => Promise<void>;
   onToggleCashBookReconciled: (entry: CashBookEntry) => Promise<void>;
   onDeleteCashBookEntry: (entryId: string) => Promise<void>;
 }
@@ -65,6 +82,7 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
   invoices,
   supplierInvoices,
   onCreateCashBookEntry,
+  onUpdateCashBookEntry,
   onToggleCashBookReconciled,
   onDeleteCashBookEntry,
 }) => {
@@ -114,6 +132,28 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
   const [reconciled, setReconciled] = useState(false);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Management Edit & Delete state
+  const [editingEntry, setEditingEntry] = useState<CashBookEntry | null>(null);
+  const [editEntryNumber, setEditEntryNumber] = useState('');
+  const [editEntryDate, setEditEntryDate] = useState('');
+  const [editEntryType, setEditEntryType] =
+    useState<CashBookEntryType>('Receipt (Inflow)');
+  const [editAccount, setEditAccount] = useState<CashBookAccount>(
+    activeAccounts[0]?.name || DEFAULT_ZIM_CASH_ACCOUNTS[0]
+  );
+  const [editCategory, setEditCategory] =
+    useState<CashBookCategory>('Customer Receipt');
+  const [editCounterparty, setEditCounterparty] = useState('');
+  const [editAmount, setEditAmount] = useState('');
+  const [editReference, setEditReference] = useState('');
+  const [editLinkedDocRef, setEditLinkedDocRef] = useState('');
+  const [editReconciled, setEditReconciled] = useState(false);
+  const [editNotes, setEditNotes] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [deleteConfirmEntry, setDeleteConfirmEntry] =
+    useState<CashBookEntry | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const accountBalances = useMemo(() => {
     const map: Record<
@@ -302,6 +342,59 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
       setShowCreate(false);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const openEditModal = (entry: CashBookEntry) => {
+    setEditingEntry(entry);
+    setEditEntryNumber(entry.entryNumber);
+    setEditEntryDate(entry.entryDate);
+    setEditEntryType(entry.entryType);
+    setEditAccount(entry.account);
+    setEditCategory(entry.category);
+    setEditCounterparty(entry.counterparty);
+    setEditAmount(String(entry.amount));
+    setEditReference(entry.reference || '');
+    setEditLinkedDocRef(entry.linkedDocRef || '');
+    setEditReconciled(Boolean(entry.reconciled));
+    setEditNotes(entry.notes || '');
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingEntry || !onUpdateCashBookEntry) return;
+    const numericAmount = round2(Number(editAmount) || 0);
+    if (!editCounterparty.trim() || numericAmount <= 0) return;
+
+    setSavingEdit(true);
+    try {
+      await onUpdateCashBookEntry(editingEntry.id, {
+        entryNumber: editEntryNumber.trim() || editingEntry.entryNumber,
+        entryDate: editEntryDate,
+        entryType: editEntryType,
+        account: editAccount,
+        counterparty: editCounterparty.trim(),
+        category: editCategory,
+        reference: editReference.trim(),
+        linkedDocRef: editLinkedDocRef.trim(),
+        amount: numericAmount,
+        reconciled: editReconciled,
+        notes: editNotes.trim(),
+      });
+      setEditingEntry(null);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteConfirmEntry) return;
+    setDeleting(true);
+    try {
+      await onDeleteCashBookEntry(deleteConfirmEntry.id);
+      setDeleteConfirmEntry(null);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -638,15 +731,28 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
                     </td>
                     <td className="py-3 px-4 align-top text-right no-print">
                       {role === 'management' && (
-                        <button
-                          type="button"
-                          onClick={() => onDeleteCashBookEntry(entry.id)}
-                          className="p-1.5 text-slate-400 hover:text-red-600 rounded hover:bg-red-50"
-                          title="Delete entry"
-                          aria-label={`Delete ${entry.entryNumber}`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        <div className="inline-flex items-center justify-end gap-1">
+                          {onUpdateCashBookEntry && (
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(entry)}
+                              className="p-1.5 text-slate-400 hover:text-blue-600 rounded hover:bg-blue-50"
+                              title="Edit entry"
+                              aria-label={`Edit ${entry.entryNumber}`}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setDeleteConfirmEntry(entry)}
+                            className="p-1.5 text-slate-400 hover:text-red-600 rounded hover:bg-red-50"
+                            title="Delete entry"
+                            aria-label={`Delete ${entry.entryNumber}`}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -879,6 +985,254 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Management Edit Cash Book Entry Modal */}
+      {editingEntry && role === 'management' && onUpdateCashBookEntry && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4 overflow-y-auto no-print">
+          <div className="bg-white border border-slate-200 rounded-lg max-w-2xl w-full max-h-[92vh] flex flex-col">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h2 className="font-display text-base font-bold text-slate-900">
+                  Edit Cash Book Entry ·{' '}
+                  <span className="font-mono-nums">{editingEntry.entryNumber}</span>
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Management correction for posted cash, bank, EcoCash, or ZIPIT
+                  transaction.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingEntry(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-md"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={handleEditSubmit}
+              className="p-6 overflow-y-auto space-y-4 text-xs"
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Entry Number *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editEntryNumber}
+                    onChange={(e) => setEditEntryNumber(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Transaction Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={editEntryDate}
+                    onChange={(e) => setEditEntryDate(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Entry Type *
+                  </label>
+                  <select
+                    value={editEntryType}
+                    onChange={(e) =>
+                      setEditEntryType(e.target.value as CashBookEntryType)
+                    }
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 bg-white"
+                  >
+                    {ENTRY_TYPES.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Cash / Bank Account *
+                  </label>
+                  <select
+                    value={editAccount}
+                    onChange={(e) => setEditAccount(e.target.value as CashBookAccount)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 bg-white"
+                  >
+                    {accountNames.map((acc) => (
+                      <option key={acc} value={acc}>
+                        {acc}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Category *
+                  </label>
+                  <select
+                    value={editCategory}
+                    onChange={(e) =>
+                      setEditCategory(e.target.value as CashBookCategory)
+                    }
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 bg-white"
+                  >
+                    {CATEGORIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Amount ({settings.currency}) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="0.01"
+                    step="0.01"
+                    value={editAmount}
+                    onChange={(e) => setEditAmount(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 font-mono-nums"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Payee / Payer (Counterparty) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editCounterparty}
+                    onChange={(e) => setEditCounterparty(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    EcoCash / ZIPIT / RTGS / Bank Ref
+                  </label>
+                  <input
+                    type="text"
+                    value={editReference}
+                    onChange={(e) => setEditReference(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Linked Invoice / Voucher #
+                  </label>
+                  <input
+                    type="text"
+                    value={editLinkedDocRef}
+                    onChange={(e) => setEditLinkedDocRef(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 font-mono-nums"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">
+                  Narration / Notes
+                </label>
+                <input
+                  type="text"
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  className="w-full border border-slate-200 rounded-md px-3 py-2"
+                />
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editReconciled}
+                  onChange={(e) => setEditReconciled(e.target.checked)}
+                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-600"
+                />
+                <span className="font-medium text-slate-800">
+                  Verified &amp; reconciled against bank / EcoCash statement
+                </span>
+              </label>
+
+              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setEditingEntry(null)}
+                  className="px-4 py-2 rounded-md border border-slate-200 text-slate-700 font-medium hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEdit}
+                  className="px-4 py-2 rounded-md bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {savingEdit ? 'Saving Changes...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Management Delete Confirmation Modal */}
+      {deleteConfirmEntry && role === 'management' && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4 no-print">
+          <div className="bg-white border border-slate-200 rounded-lg max-w-md w-full p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="font-display text-base font-bold text-slate-900">
+                  Delete Cash Book Entry?
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  This permanently removes{' '}
+                  <strong className="font-mono-nums text-slate-800">
+                    {deleteConfirmEntry.entryNumber}
+                  </strong>{' '}
+                  ({deleteConfirmEntry.counterparty} ·{' '}
+                  {formatMoney(deleteConfirmEntry.amount, settings.currency)}) from the{' '}
+                  {deleteConfirmEntry.account} ledger and recalculates running balances.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmEntry(null)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-200 text-xs">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmEntry(null)}
+                className="px-3.5 py-2 rounded-md border border-slate-200 text-slate-700 font-medium hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={handleConfirmDelete}
+                className="px-3.5 py-2 rounded-md bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? 'Deleting...' : 'Delete Entry'}
+              </button>
+            </div>
           </div>
         </div>
       )}

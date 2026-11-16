@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Download, Plus, X } from 'lucide-react';
+import { Download, Pencil, Plus, Trash2, X } from 'lucide-react';
 import {
   CompanySettings,
   Expense,
@@ -8,11 +8,14 @@ import {
   Job,
   PricingMode,
   SupplierInvoice,
+  TaxAccessScope,
+  UserRole,
   VatTreatment,
 } from '../types/erp';
 import {
   calculateVatBreakdown,
   calculateWithholdingTax,
+  computeExpenseVatReportable,
   formatMoney,
   round2,
   summarizeTaxBreakdown,
@@ -20,6 +23,8 @@ import {
 import { StatusText } from './StatusText';
 
 interface AccountingViewProps {
+  role?: UserRole;
+  taxScope?: TaxAccessScope;
   settings: CompanySettings;
   invoices: Invoice[];
   expenses: Expense[];
@@ -28,6 +33,32 @@ interface AccountingViewProps {
   onCreateExpense: (
     input: Omit<Expense, 'id' | 'ownerUid' | 'staffUids' | 'createdAt' | 'updatedAt'>
   ) => Promise<void>;
+  onUpdateExpense?: (
+    expenseId: string,
+    input: {
+      expenseNumber: string;
+      vendorName: string;
+      vendorVatPin?: string;
+      vendorTin?: string;
+      vendorVatReg?: string;
+      vendorInvoiceRef?: string;
+      category: ExpenseCategory;
+      jobId?: string;
+      expenseDate: string;
+      vatTreatment: VatTreatment;
+      isVatClaimable: boolean;
+      vatRate: number;
+      netAmount: number;
+      vatAmount: number;
+      grossAmount: number;
+      whtApplicable?: boolean;
+      whtRate?: number;
+      whtAmount?: number;
+      paymentStatus: 'Paid' | 'Payable';
+      notes?: string;
+    }
+  ) => Promise<void>;
+  onDeleteExpense?: (expenseId: string) => Promise<void>;
   onToggleExpenseStatus: (expense: Expense) => Promise<void>;
 }
 
@@ -48,16 +79,28 @@ const TREATMENT_LABELS: Record<VatTreatment, string> = {
 };
 
 export const AccountingView: React.FC<AccountingViewProps> = ({
+  role = 'management',
+  taxScope = 'all',
   settings,
   invoices,
   expenses,
   supplierInvoices,
   jobs,
   onCreateExpense,
+  onUpdateExpense,
+  onDeleteExpense,
   onToggleExpenseStatus,
 }) => {
+  const isVatOnly = role === 'accounts' && taxScope === 'vat_only';
+  const isManagement = role === 'management' && !isVatOnly;
+
   const [activeTab, setActiveTab] = useState<'vat' | 'pnl' | 'expenses'>('vat');
   const [showAddExpense, setShowAddExpense] = useState(false);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [deleteConfirmExpense, setDeleteConfirmExpense] = useState<Expense | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const effectiveTab = isVatOnly && activeTab === 'pnl' ? 'vat' : activeTab;
 
   // New expense form
   const [vendorName, setVendorName] = useState('');
@@ -80,6 +123,27 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // Edit expense form
+  const [editExpNumber, setEditExpNumber] = useState('');
+  const [editVendorName, setEditVendorName] = useState('');
+  const [editVendorTin, setEditVendorTin] = useState('');
+  const [editVendorVatReg, setEditVendorVatReg] = useState('');
+  const [editVendorInvoiceRef, setEditVendorInvoiceRef] = useState('');
+  const [editCategory, setEditCategory] =
+    useState<ExpenseCategory>('Materials & Substrates');
+  const [editJobId, setEditJobId] = useState('');
+  const [editExpenseDate, setEditExpenseDate] = useState('');
+  const [editVatTreatment, setEditVatTreatment] = useState<VatTreatment>('standard');
+  const [editIsVatClaimable, setEditIsVatClaimable] = useState(true);
+  const [editPricingMode, setEditPricingMode] = useState<PricingMode>('inclusive');
+  const [editAmount, setEditAmount] = useState('');
+  const [editVatRate, setEditVatRate] = useState('15');
+  const [editWhtApplicable, setEditWhtApplicable] = useState(false);
+  const [editWhtRate, setEditWhtRate] = useState('30');
+  const [editPaymentStatus, setEditPaymentStatus] = useState<'Paid' | 'Payable'>('Paid');
+  const [editNotes, setEditNotes] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+
   const vatPreview = calculateVatBreakdown({
     amount: Number(amount) || 0,
     pricingMode,
@@ -91,6 +155,19 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
     applicable: whtApplicable,
     baseAmount: vatPreview.netAmount,
     ratePct: Number(whtRate) || 0,
+  });
+
+  const editVatPreview = calculateVatBreakdown({
+    amount: Number(editAmount) || 0,
+    pricingMode: editPricingMode,
+    vatTreatment: editVatTreatment,
+    vatRate: editVatTreatment === 'standard' ? Number(editVatRate) || 0 : 0,
+  });
+
+  const editWhtPreviewAmount = calculateWithholdingTax({
+    applicable: editWhtApplicable,
+    baseAmount: editVatPreview.netAmount,
+    ratePct: Number(editWhtRate) || 0,
   });
 
   const ledger = useMemo(() => {
@@ -258,6 +335,74 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
     }
   };
 
+  const openEditExpense = (exp: Expense) => {
+    setEditingExpense(exp);
+    setEditExpNumber(exp.expenseNumber);
+    setEditVendorName(exp.vendorName);
+    setEditVendorTin(exp.vendorTin || exp.vendorVatPin || '');
+    setEditVendorVatReg(exp.vendorVatReg || '');
+    setEditVendorInvoiceRef(exp.vendorInvoiceRef || '');
+    setEditCategory(exp.category);
+    setEditJobId(exp.jobId || '');
+    setEditExpenseDate(exp.expenseDate);
+    const t = exp.vatTreatment ?? (exp.vatAmount > 0 ? 'standard' : 'exempt');
+    setEditVatTreatment(t);
+    setEditIsVatClaimable(Boolean(exp.isVatClaimable));
+    setEditPricingMode('inclusive');
+    setEditAmount(String(exp.grossAmount));
+    setEditVatRate(String(exp.vatRate ?? settings.defaultVatRate ?? 15));
+    setEditWhtApplicable(Boolean(exp.whtApplicable));
+    setEditWhtRate(String(exp.whtRate ?? 30));
+    setEditPaymentStatus(exp.paymentStatus);
+    setEditNotes(exp.notes || '');
+  };
+
+  const handleSaveEditExpense = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingExpense || !onUpdateExpense || !editVendorName.trim()) return;
+    setSavingEdit(true);
+    try {
+      const cleanTin = editVendorTin.trim().toUpperCase();
+      const cleanVatReg = editVendorVatReg.trim().toUpperCase();
+      await onUpdateExpense(editingExpense.id, {
+        expenseNumber: editExpNumber.trim() || editingExpense.expenseNumber,
+        vendorName: editVendorName.trim(),
+        vendorVatPin: cleanTin || cleanVatReg,
+        vendorTin: cleanTin,
+        vendorVatReg: cleanVatReg,
+        vendorInvoiceRef: editVendorInvoiceRef.trim(),
+        category: editCategory,
+        jobId: editJobId,
+        expenseDate: editExpenseDate,
+        vatTreatment: editVatTreatment,
+        isVatClaimable: editVatTreatment === 'standard' && editIsVatClaimable,
+        vatRate: editVatTreatment === 'standard' ? Number(editVatRate) || 0 : 0,
+        netAmount: editVatPreview.netAmount,
+        vatAmount: editVatPreview.vatAmount,
+        grossAmount: editVatPreview.grossAmount,
+        whtApplicable: editWhtApplicable,
+        whtRate: editWhtApplicable ? Number(editWhtRate) || 0 : 0,
+        whtAmount: editWhtPreviewAmount,
+        paymentStatus: editPaymentStatus,
+        notes: editNotes.trim(),
+      });
+      setEditingExpense(null);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleConfirmDeleteExpense = async () => {
+    if (!deleteConfirmExpense || !onDeleteExpense) return;
+    setDeleting(true);
+    try {
+      await onDeleteExpense(deleteConfirmExpense.id);
+      setDeleteConfirmExpense(null);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const handleExportVatCsv = () => {
     const rows = [
       [
@@ -373,6 +518,14 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
 
   return (
     <div className="space-y-5">
+      {isVatOnly && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900">
+          <strong>ZIMRA / VAT-Only Read-Only View:</strong> Showing only VAT-reportable
+          invoices, claimable input VAT bills with ZIMRA TIN / VAT Reg #. Internal P&amp;L and
+          non-VAT / no-TIN transactions are excluded.
+        </div>
+      )}
+
       {/* Top Tabs & Action */}
       <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-md">
@@ -380,34 +533,38 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
             type="button"
             onClick={() => setActiveTab('vat')}
             className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap ${
-              activeTab === 'vat'
+              effectiveTab === 'vat'
                 ? 'bg-white text-slate-900 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             VAT Return Worksheet
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('pnl')}
-            className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap ${
-              activeTab === 'pnl'
-                ? 'bg-white text-slate-900 shadow-sm'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Profit &amp; Loss Statement
-          </button>
+          {!isVatOnly && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('pnl')}
+              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap ${
+                effectiveTab === 'pnl'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Profit &amp; Loss Statement
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setActiveTab('expenses')}
             className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap ${
-              activeTab === 'expenses'
+              effectiveTab === 'expenses'
                 ? 'bg-white text-slate-900 shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Supplier Bills &amp; Expenses ({expenses.length})
+            {isVatOnly
+              ? `VAT Expenses (${expenses.length})`
+              : `Supplier Bills & Expenses (${expenses.length})`}
           </button>
         </div>
 
@@ -420,19 +577,21 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
             <Download className="h-3.5 w-3.5" />
             <span>Export VAT CSV</span>
           </button>
-          <button
-            type="button"
-            onClick={() => setShowAddExpense(true)}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 whitespace-nowrap"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Log Expense / Bill</span>
-          </button>
+          {!isVatOnly && (
+            <button
+              type="button"
+              onClick={() => setShowAddExpense(true)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 whitespace-nowrap"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Log Expense / Bill</span>
+            </button>
+          )}
         </div>
       </div>
 
       {/* VAT Return Tab */}
-      {activeTab === 'vat' && (
+      {effectiveTab === 'vat' && (
         <div className="space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             <div className="bg-white border border-slate-200 rounded-lg p-5">
@@ -633,7 +792,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
       )}
 
       {/* Profit & Loss Statement Tab */}
-      {activeTab === 'pnl' && (
+      {effectiveTab === 'pnl' && !isVatOnly && (
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden max-w-3xl">
           <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
             <h2 className="font-display text-sm font-bold text-slate-900">
@@ -708,7 +867,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
       )}
 
       {/* Expenses Ledger Tab */}
-      {activeTab === 'expenses' && (
+      {effectiveTab === 'expenses' && (
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           {expenses.length === 0 ? (
             <div className="p-10 text-center text-sm text-slate-500">
@@ -728,6 +887,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                     <th className="py-2.5 px-4 text-right">WHT</th>
                     <th className="py-2.5 px-4 text-right">Gross</th>
                     <th className="py-2.5 px-4">Status</th>
+                    {isManagement && <th className="py-2.5 px-4 text-right">Actions</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
@@ -748,6 +908,11 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                               : ''}
                             {exp.vendorVatReg ? ` · VAT ${exp.vendorVatReg}` : ''}
                           </div>
+                          {!isVatOnly && !computeExpenseVatReportable(exp) && (
+                            <div className="text-[10px] text-slate-400 mt-0.5">
+                              Internal only · Hidden from ZIMRA (non-VAT or no TIN)
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 px-4 text-xs text-slate-700">{exp.category}</td>
                         <td className="py-3 px-4 font-mono-nums text-xs text-slate-600 whitespace-nowrap">
@@ -776,15 +941,47 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                           {formatMoney(exp.grossAmount, settings.currency)}
                         </td>
                         <td className="py-3 px-4">
-                          <button
-                            type="button"
-                            onClick={() => onToggleExpenseStatus(exp)}
-                            className="hover:underline"
-                            title="Toggle Paid / Payable"
-                          >
+                          {isVatOnly ? (
                             <StatusText status={exp.paymentStatus} />
-                          </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onToggleExpenseStatus(exp)}
+                              className="hover:underline"
+                              title="Toggle Paid / Payable"
+                            >
+                              <StatusText status={exp.paymentStatus} />
+                            </button>
+                          )}
                         </td>
+                        {isManagement && (
+                          <td className="py-3 px-4 text-right whitespace-nowrap">
+                            <div className="inline-flex items-center gap-1">
+                              {onUpdateExpense && (
+                                <button
+                                  type="button"
+                                  onClick={() => openEditExpense(exp)}
+                                  className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"
+                                  title="Edit expense"
+                                  aria-label={`Edit ${exp.expenseNumber}`}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                              {onDeleteExpense && (
+                                <button
+                                  type="button"
+                                  onClick={() => setDeleteConfirmExpense(exp)}
+                                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded"
+                                  title="Delete expense"
+                                  aria-label={`Delete ${exp.expenseNumber}`}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -1058,6 +1255,337 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Management Edit Expense Modal */}
+      {editingExpense && isManagement && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-lg w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <h2 className="font-display text-base font-bold text-slate-900">
+                Edit Expense · {editingExpense.expenseNumber}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setEditingExpense(null)}
+                className="p-1 text-slate-500 hover:text-slate-900"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveEditExpense} className="overflow-y-auto p-6 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Expense #
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editExpNumber}
+                    onChange={(e) => setEditExpNumber(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Vendor / Supplier Name
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editVendorName}
+                    onChange={(e) => setEditVendorName(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Expense Category
+                  </label>
+                  <select
+                    value={editCategory}
+                    onChange={(e) => setEditCategory(e.target.value as ExpenseCategory)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white"
+                  >
+                    {EXPENSE_CATEGORIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Expense Date
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={editExpenseDate}
+                    onChange={(e) => setEditExpenseDate(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Supplier ZIMRA TIN
+                  </label>
+                  <input
+                    type="text"
+                    value={editVendorTin}
+                    onChange={(e) => setEditVendorTin(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Supplier VAT Reg #
+                  </label>
+                  <input
+                    type="text"
+                    value={editVendorVatReg}
+                    onChange={(e) => setEditVendorVatReg(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Supplier Invoice / Ref
+                  </label>
+                  <input
+                    type="text"
+                    value={editVendorInvoiceRef}
+                    onChange={(e) => setEditVendorInvoiceRef(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Link to Job
+                  </label>
+                  <select
+                    value={editJobId}
+                    onChange={(e) => setEditJobId(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white"
+                  >
+                    <option value="">General Overhead</option>
+                    {jobs.map((j) => (
+                      <option key={j.id} value={j.id}>
+                        {j.jobNumber} — {j.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Amount ({settings.currency})
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    value={editAmount}
+                    onChange={(e) => setEditAmount(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Tax Class
+                  </label>
+                  <select
+                    value={editVatTreatment}
+                    onChange={(e) => {
+                      const next = e.target.value as VatTreatment;
+                      setEditVatTreatment(next);
+                      setEditIsVatClaimable(next === 'standard');
+                    }}
+                    className="w-full border border-slate-200 rounded-md px-2.5 py-2 text-xs bg-white"
+                  >
+                    <option value="standard">Standard VAT</option>
+                    <option value="zero">Zero-Rated 0%</option>
+                    <option value="exempt">Exempt</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Input Pricing
+                  </label>
+                  <select
+                    value={editPricingMode}
+                    onChange={(e) => setEditPricingMode(e.target.value as PricingMode)}
+                    className="w-full border border-slate-200 rounded-md px-2.5 py-2 text-xs bg-white"
+                  >
+                    <option value="inclusive">VAT Inclusive</option>
+                    <option value="exclusive">VAT Exclusive</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Payment Status
+                  </label>
+                  <select
+                    value={editPaymentStatus}
+                    onChange={(e) =>
+                      setEditPaymentStatus(e.target.value as 'Paid' | 'Payable')
+                    }
+                    className="w-full border border-slate-200 rounded-md px-2.5 py-2 text-xs bg-white"
+                  >
+                    <option value="Paid">Paid</option>
+                    <option value="Payable">Payable (A/P)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-md p-3 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editVatTreatment === 'standard' && editIsVatClaimable}
+                        disabled={editVatTreatment !== 'standard'}
+                        onChange={(e) => setEditIsVatClaimable(e.target.checked)}
+                        className="rounded border-slate-300"
+                      />
+                      <span>Claimable Input VAT ({editVatRate}%)</span>
+                    </label>
+                    {editVatTreatment === 'standard' && editIsVatClaimable && (
+                      <input
+                        type="number"
+                        min="0"
+                        max="50"
+                        step="0.5"
+                        value={editVatRate}
+                        onChange={(e) => setEditVatRate(e.target.value)}
+                        className="w-16 border border-slate-200 rounded px-2 py-1 text-xs font-mono-nums bg-white"
+                      />
+                    )}
+                  </div>
+                  <div className="text-right text-xs font-mono-nums">
+                    Net {formatMoney(editVatPreview.netAmount, settings.currency)} · VAT{' '}
+                    {formatMoney(editVatPreview.vatAmount, settings.currency)}
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-800 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editWhtApplicable}
+                        onChange={(e) => setEditWhtApplicable(e.target.checked)}
+                        className="rounded border-slate-300 text-amber-600"
+                      />
+                      <span>Apply Withholding Tax (WHT %)</span>
+                    </label>
+                    {editWhtApplicable && (
+                      <input
+                        type="number"
+                        min="0"
+                        max="50"
+                        step="0.5"
+                        value={editWhtRate}
+                        onChange={(e) => setEditWhtRate(e.target.value)}
+                        className="w-16 border border-slate-200 rounded px-2 py-1 text-xs font-mono-nums bg-white"
+                      />
+                    )}
+                  </div>
+                  {editWhtApplicable && (
+                    <div className="text-right text-xs font-mono-nums">
+                      WHT{' '}
+                      <strong className="text-amber-700">
+                        {formatMoney(editWhtPreviewAmount, settings.currency)}
+                      </strong>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Notes</label>
+                <input
+                  type="text"
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingExpense(null)}
+                  className="px-4 py-2 rounded-md border border-slate-200 text-xs font-semibold text-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEdit}
+                  className="px-4 py-2 rounded-md bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {savingEdit ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Management Delete Expense Confirmation Modal */}
+      {deleteConfirmExpense && isManagement && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-lg w-full max-w-md overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <h2 className="font-display text-sm font-bold text-slate-900">
+                Delete Expense Record?
+              </h2>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmExpense(null)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4 text-xs text-slate-600">
+              <p>
+                Permanently delete expense{' '}
+                <strong className="font-mono-nums text-slate-900">
+                  {deleteConfirmExpense.expenseNumber}
+                </strong>{' '}
+                ({deleteConfirmExpense.vendorName} ·{' '}
+                <strong className="font-mono-nums text-slate-900">
+                  {formatMoney(deleteConfirmExpense.grossAmount, settings.currency)}
+                </strong>
+                )?
+              </p>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirmExpense(null)}
+                  className="px-4 py-2 rounded-md border border-slate-200 font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={handleConfirmDeleteExpense}
+                  className="px-4 py-2 rounded-md bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50"
+                >
+                  {deleting ? 'Deleting...' : 'Delete Expense'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

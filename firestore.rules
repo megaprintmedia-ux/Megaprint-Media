@@ -47,6 +47,10 @@ service cloud.firestore {
       return arr is list && arr.size() >= 1 && arr.size() <= 10 && arr[0] is string && arr[0].size() >= 1 && arr[0].size() <= 128;
     }
 
+    function isOptionalBoundedUidList(arr) {
+      return arr is list && arr.size() <= 10 && (arr.size() == 0 || (arr[0] is string && arr[0].size() >= 1 && arr[0].size() <= 128));
+    }
+
     function isBootstrappedAdmin() {
       return isVerifiedSignedIn() && request.auth.token.email.lower() == 'megaprintmedia@gmail.com';
     }
@@ -59,11 +63,27 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
+    function isVatAuditorOnly() {
+      return userDocExists() &&
+        userDoc().status == 'active' &&
+        userDoc().role == 'accounts' &&
+        ('taxScope' in userDoc() && userDoc().taxScope == 'vat_only');
+    }
+
     function isActiveStaff() {
       return isBootstrappedAdmin() || (
         userDocExists() &&
         userDoc().status == 'active' &&
         userDoc().role in ['management', 'sales', 'accounts', 'production']
+      );
+    }
+
+    function isFullActiveStaff() {
+      return isBootstrappedAdmin() || (
+        userDocExists() &&
+        userDoc().status == 'active' &&
+        userDoc().role in ['management', 'sales', 'accounts', 'production'] &&
+        !('taxScope' in userDoc() && userDoc().taxScope == 'vat_only')
       );
     }
 
@@ -79,7 +99,8 @@ service cloud.firestore {
       return isManagement() || (
         userDocExists() &&
         userDoc().status == 'active' &&
-        userDoc().role == 'accounts'
+        userDoc().role == 'accounts' &&
+        !('taxScope' in userDoc() && userDoc().taxScope == 'vat_only')
       );
     }
 
@@ -104,7 +125,7 @@ service cloud.firestore {
     // -------------------------------------------------------------------------
     function isValidUserProfile(data, userId) {
       return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'department', 'status', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'department', 'status', 'commissionRatePct', 'inviteId', 'adminUids', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'department', 'status', 'taxScope', 'commissionRatePct', 'inviteId', 'adminUids', 'createdAt', 'updatedAt']) &&
         data.uid == userId &&
         isValidId(data.uid) &&
         isNonEmptyStr(data.email, 200) &&
@@ -112,6 +133,7 @@ service cloud.firestore {
         data.role in ['management', 'sales', 'accounts', 'production'] &&
         data.department in ['Management', 'Sales & Marketing', 'Accounts', 'Production'] &&
         data.status in ['active', 'pending', 'disabled'] &&
+        (!('taxScope' in data) || data.taxScope in ['all', 'vat_only']) &&
         (!('commissionRatePct' in data) || (data.commissionRatePct is number && data.commissionRatePct >= 0 && data.commissionRatePct <= 50)) &&
         (!('inviteId' in data) || isOptionalStr(data.inviteId, 128)) &&
         (!('adminUids' in data) || isBoundedUidList(data.adminUids)) &&
@@ -256,7 +278,8 @@ service cloud.firestore {
           'vatRate', 'lines', 'standardNetAmount', 'zeroRatedAmount', 'exemptAmount',
           'netAmount', 'vatAmount', 'grossAmount', 'whtRate', 'whtWithheldAmount',
           'whtCertificateRef', 'amountPaid', 'balanceDue', 'paymentMethod',
-          'paymentReference', 'notes', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+          'paymentReference', 'notes', 'ownerUid', 'staffUids', 'isVatReportable',
+          'vatViewerUids', 'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.invoiceNumber, 40) &&
         (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
@@ -288,6 +311,15 @@ service cloud.firestore {
         (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
         isValidId(data.ownerUid) &&
         isBoundedUidList(data.staffUids) &&
+        (!('isVatReportable' in data) || data.isVatReportable is bool) &&
+        (!('vatViewerUids' in data) || isOptionalBoundedUidList(data.vatViewerUids)) &&
+        (!('isVatReportable' in data) || data.isVatReportable == false || (
+          !(data.status in ['Draft', 'Void']) &&
+          data.vatAmount > 0 &&
+          (('clientTin' in data && data.clientTin.size() > 0) ||
+           ('clientVatPin' in data && data.clientVatPin.size() > 0) ||
+           ('clientVatReg' in data && data.clientVatReg.size() > 0))
+        )) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -303,7 +335,7 @@ service cloud.firestore {
           'vendorInvoiceRef', 'category', 'jobId', 'expenseDate', 'vatTreatment',
           'isVatClaimable', 'vatRate', 'netAmount', 'vatAmount', 'grossAmount',
           'whtApplicable', 'whtRate', 'whtAmount', 'paymentStatus', 'notes',
-          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+          'ownerUid', 'staffUids', 'isVatReportable', 'vatViewerUids', 'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.expenseNumber, 40) &&
         isNonEmptyStr(data.vendorName, 160) &&
@@ -331,6 +363,15 @@ service cloud.firestore {
         (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
         isValidId(data.ownerUid) &&
         isBoundedUidList(data.staffUids) &&
+        (!('isVatReportable' in data) || data.isVatReportable is bool) &&
+        (!('vatViewerUids' in data) || isOptionalBoundedUidList(data.vatViewerUids)) &&
+        (!('isVatReportable' in data) || data.isVatReportable == false || (
+          data.isVatClaimable == true &&
+          data.vatAmount > 0 &&
+          (('vendorTin' in data && data.vendorTin.size() > 0) ||
+           ('vendorVatPin' in data && data.vendorVatPin.size() > 0) ||
+           ('vendorVatReg' in data && data.vendorVatReg.size() > 0))
+        )) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -492,7 +533,7 @@ service cloud.firestore {
           'netAmount', 'vatAmount', 'grossAmount', 'whtApplicable', 'whtRate',
           'whtAmount', 'whtRemitted', 'amountPaid', 'balanceDue',
           'status', 'paymentMethod', 'paymentReference', 'notes',
-          'ownerUid', 'viewerUids', 'createdAt', 'updatedAt'
+          'ownerUid', 'viewerUids', 'isVatReportable', 'vatViewerUids', 'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.recordNumber, 40) &&
         isNonEmptyStr(data.supplierName, 160) &&
@@ -533,6 +574,15 @@ service cloud.firestore {
         (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
         isValidId(data.ownerUid) &&
         isBoundedUidList(data.viewerUids) &&
+        (!('isVatReportable' in data) || data.isVatReportable is bool) &&
+        (!('vatViewerUids' in data) || isOptionalBoundedUidList(data.vatViewerUids)) &&
+        (!('isVatReportable' in data) || data.isVatReportable == false || (
+          data.isVatClaimable == true &&
+          data.vatAmount > 0 &&
+          (('supplierTin' in data && data.supplierTin.size() > 0) ||
+           ('supplierTaxPin' in data && data.supplierTaxPin.size() > 0) ||
+           ('supplierVatReg' in data && data.supplierVatReg.size() > 0))
+        )) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -696,7 +746,7 @@ service cloud.firestore {
           'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
-          'email', 'displayName', 'role', 'department', 'commissionRatePct',
+          'email', 'displayName', 'role', 'department', 'taxScope', 'commissionRatePct',
           'status', 'invitedByName', 'acceptedUid', 'ownerUid', 'adminUids',
           'createdAt', 'updatedAt'
         ]) &&
@@ -704,6 +754,7 @@ service cloud.firestore {
         isNonEmptyStr(data.displayName, 120) &&
         data.role in ['management', 'sales', 'accounts', 'production'] &&
         data.department in ['Management', 'Sales & Marketing', 'Accounts', 'Production'] &&
+        (!('taxScope' in data) || data.taxScope in ['all', 'vat_only']) &&
         data.commissionRatePct is number && data.commissionRatePct >= 0 && data.commissionRatePct <= 50 &&
         data.status in ['invited', 'accepted', 'revoked'] &&
         isNonEmptyStr(data.invitedByName, 120) &&
@@ -782,9 +833,13 @@ service cloud.firestore {
             get(/databases/$(database)/documents/userInvites/$(incoming().inviteId)).data.email == request.auth.token.email.lower() &&
             incoming().role == get(/databases/$(database)/documents/userInvites/$(incoming().inviteId)).data.role &&
             incoming().department == get(/databases/$(database)/documents/userInvites/$(incoming().inviteId)).data.department &&
+            (
+              (!('taxScope' in get(/databases/$(database)/documents/userInvites/$(incoming().inviteId)).data) && (!('taxScope' in incoming()) || incoming().taxScope == 'all')) ||
+              ('taxScope' in get(/databases/$(database)/documents/userInvites/$(incoming().inviteId)).data && incoming().taxScope == get(/databases/$(database)/documents/userInvites/$(incoming().inviteId)).data.taxScope)
+            ) &&
             incoming().status == 'active'
           ) ||
-          (request.auth.uid == userId && incoming().role == 'sales' && incoming().status == 'pending')
+          (request.auth.uid == userId && incoming().role == 'sales' && incoming().status == 'pending' && (!('taxScope' in incoming()) || incoming().taxScope == 'all'))
         );
       allow update: if isVerifiedSignedIn() &&
         isValidId(userId) &&
@@ -823,7 +878,7 @@ service cloud.firestore {
 
     // 3. Clients CRM
     match /clients/{clientId} {
-      allow get: if isVerifiedSignedIn() && isValidId(clientId) && isActiveStaff();
+      allow get: if isVerifiedSignedIn() && isValidId(clientId) && isFullActiveStaff();
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
@@ -858,7 +913,7 @@ service cloud.firestore {
 
     // 4. Jobs & Job Cards
     match /jobs/{jobId} {
-      allow get: if isVerifiedSignedIn() && isValidId(jobId) && isActiveStaff();
+      allow get: if isVerifiedSignedIn() && isValidId(jobId) && isFullActiveStaff();
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
@@ -913,7 +968,7 @@ service cloud.firestore {
       // 4a. Job Cost Entries Subcollection (Master Gate)
       match /costs/{costId} {
         allow get: if isVerifiedSignedIn() && isValidId(jobId) && isValidId(costId) &&
-          exists(/databases/$(database)/documents/jobs/$(jobId)) && isActiveStaff();
+          exists(/databases/$(database)/documents/jobs/$(jobId)) && isFullActiveStaff();
         allow list: if isVerifiedSignedIn() && isValidId(jobId) && (
           isBootstrappedAdmin() ||
           resource.data.ownerUid == request.auth.uid ||
@@ -935,11 +990,15 @@ service cloud.firestore {
 
     // 5. Invoices (VAT & Receivables)
     match /invoices/{invoiceId} {
-      allow get: if isVerifiedSignedIn() && isValidId(invoiceId) && isActiveStaff();
+      allow get: if isVerifiedSignedIn() && isValidId(invoiceId) && (
+        isFullActiveStaff() ||
+        (isVatAuditorOnly() && ('isVatReportable' in existing() && existing().isVatReportable == true) && existing().vatAmount > 0)
+      );
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
-        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids) ||
+        ('vatViewerUids' in resource.data && resource.data.vatViewerUids is list && resource.data.vatViewerUids.size() <= 10 && request.auth.uid in resource.data.vatViewerUids && ('isVatReportable' in resource.data && resource.data.isVatReportable == true) && resource.data.vatAmount > 0)
       );
       allow create: if isVerifiedSignedIn() &&
         isValidId(invoiceId) &&
@@ -964,7 +1023,8 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly([
               'status', 'amountPaid', 'balanceDue', 'paymentMethod',
               'paymentReference', 'whtRate', 'whtWithheldAmount',
-              'whtCertificateRef', 'notes', 'dueDate', 'updatedAt'
+              'whtCertificateRef', 'notes', 'dueDate', 'isVatReportable',
+              'vatViewerUids', 'updatedAt'
             ])
           )
         );
@@ -973,11 +1033,16 @@ service cloud.firestore {
 
     // 6. Expenses (Input VAT & Payables)
     match /expenses/{expenseId} {
-      allow get: if isVerifiedSignedIn() && isValidId(expenseId) && (isAccountsOrManagement() || isBootstrappedAdmin());
+      allow get: if isVerifiedSignedIn() && isValidId(expenseId) && (
+        isAccountsOrManagement() ||
+        isBootstrappedAdmin() ||
+        (isVatAuditorOnly() && ('isVatReportable' in existing() && existing().isVatReportable == true) && existing().isVatClaimable == true && existing().vatAmount > 0)
+      );
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
-        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids) ||
+        ('vatViewerUids' in resource.data && resource.data.vatViewerUids is list && resource.data.vatViewerUids.size() <= 10 && request.auth.uid in resource.data.vatViewerUids && ('isVatReportable' in resource.data && resource.data.isVatReportable == true) && resource.data.isVatClaimable == true && resource.data.vatAmount > 0)
       );
       allow create: if isVerifiedSignedIn() &&
         isValidId(expenseId) &&
@@ -997,7 +1062,8 @@ service cloud.firestore {
           isManagement() ||
           (isAccountsOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly([
             'paymentStatus', 'vendorVatPin', 'vendorTin', 'vendorVatReg',
-            'vendorInvoiceRef', 'vatTreatment', 'isVatClaimable', 'notes', 'updatedAt'
+            'vendorInvoiceRef', 'vatTreatment', 'isVatClaimable', 'notes',
+            'isVatReportable', 'vatViewerUids', 'updatedAt'
           ]))
         );
       allow delete: if isManagement() && isValidId(expenseId);
@@ -1043,7 +1109,7 @@ service cloud.firestore {
 
     // 8. Time Entries (Time Tracking)
     match /timeEntries/{entryId} {
-      allow get: if isVerifiedSignedIn() && isValidId(entryId) && isActiveStaff();
+      allow get: if isVerifiedSignedIn() && isValidId(entryId) && isFullActiveStaff();
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
@@ -1056,7 +1122,7 @@ service cloud.firestore {
         request.auth.uid in incoming().staffUids &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        isActiveStaff();
+        isFullActiveStaff();
       allow update: if isVerifiedSignedIn() &&
         isValidId(entryId) &&
         isValidTimeEntry(incoming()) &&
@@ -1084,7 +1150,7 @@ service cloud.firestore {
 
     // 9. Leave Requests
     match /leaveRequests/{requestId} {
-      allow get: if isVerifiedSignedIn() && isValidId(requestId) && isActiveStaff();
+      allow get: if isVerifiedSignedIn() && isValidId(requestId) && isFullActiveStaff();
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
@@ -1098,7 +1164,7 @@ service cloud.firestore {
         incoming().status == 'Pending' &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        isActiveStaff();
+        isFullActiveStaff();
       allow update: if isVerifiedSignedIn() &&
         isValidId(requestId) &&
         isValidLeaveRequest(incoming()) &&
@@ -1147,7 +1213,7 @@ service cloud.firestore {
 
     // 11. Operational Sticky Notes (Manager Reminders)
     match /notes/{noteId} {
-      allow get: if isVerifiedSignedIn() && isValidId(noteId) && isActiveStaff();
+      allow get: if isVerifiedSignedIn() && isValidId(noteId) && isFullActiveStaff();
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
@@ -1173,11 +1239,16 @@ service cloud.firestore {
 
     // 12. Supplier Tax Invoices (Input VAT & Accounts Payable)
     match /supplierInvoices/{supplierInvoiceId} {
-      allow get: if isVerifiedSignedIn() && isValidId(supplierInvoiceId) && (isAccountsOrManagement() || isBootstrappedAdmin());
+      allow get: if isVerifiedSignedIn() && isValidId(supplierInvoiceId) && (
+        isAccountsOrManagement() ||
+        isBootstrappedAdmin() ||
+        (isVatAuditorOnly() && ('isVatReportable' in existing() && existing().isVatReportable == true) && existing().isVatClaimable == true && existing().vatAmount > 0)
+      );
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
-        (resource.data.viewerUids is list && resource.data.viewerUids.size() <= 10 && request.auth.uid in resource.data.viewerUids)
+        (resource.data.viewerUids is list && resource.data.viewerUids.size() <= 10 && request.auth.uid in resource.data.viewerUids) ||
+        ('vatViewerUids' in resource.data && resource.data.vatViewerUids is list && resource.data.vatViewerUids.size() <= 10 && request.auth.uid in resource.data.vatViewerUids && ('isVatReportable' in resource.data && resource.data.isVatReportable == true) && resource.data.isVatClaimable == true && resource.data.vatAmount > 0)
       );
       allow create: if isVerifiedSignedIn() &&
         isValidId(supplierInvoiceId) &&
@@ -1199,7 +1270,8 @@ service cloud.firestore {
             'status', 'amountPaid', 'balanceDue', 'paymentMethod',
             'paymentReference', 'supplierTaxPin', 'supplierTin', 'supplierVatReg',
             'isVatRegistered', 'isVatClaimable', 'whtApplicable', 'whtRate',
-            'whtAmount', 'whtRemitted', 'notes', 'dueDate', 'updatedAt'
+            'whtAmount', 'whtRemitted', 'notes', 'dueDate', 'isVatReportable',
+            'vatViewerUids', 'updatedAt'
           ]))
         );
       allow delete: if isManagement() && isValidId(supplierInvoiceId);
@@ -1207,7 +1279,7 @@ service cloud.firestore {
 
     // 13. Inventory & Samples
     match /inventoryItems/{itemId} {
-      allow get: if isVerifiedSignedIn() && isValidId(itemId) && isActiveStaff();
+      allow get: if isVerifiedSignedIn() && isValidId(itemId) && isFullActiveStaff();
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
@@ -1220,7 +1292,7 @@ service cloud.firestore {
         request.auth.uid in incoming().staffUids &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        isActiveStaff();
+        isFullActiveStaff();
       allow update: if isVerifiedSignedIn() &&
         isValidId(itemId) &&
         isValidInventoryItem(incoming()) &&
@@ -1229,7 +1301,7 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         (
           isManagement() ||
-          (isActiveStaff() && incoming().diff(existing()).affectedKeys().hasOnly([
+          (isFullActiveStaff() && incoming().diff(existing()).affectedKeys().hasOnly([
             'quantityOnHand', 'status', 'location', 'sampleClientOrSpec',
             'notes', 'reorderLevel', 'unitCost', 'supplierName', 'updatedAt'
           ]))
@@ -1239,7 +1311,7 @@ service cloud.firestore {
       // 13a. Inventory Stock Movements Subcollection (Master Gate)
       match /movements/{movementId} {
         allow get: if isVerifiedSignedIn() && isValidId(itemId) && isValidId(movementId) &&
-          exists(/databases/$(database)/documents/inventoryItems/$(itemId)) && isActiveStaff();
+          exists(/databases/$(database)/documents/inventoryItems/$(itemId)) && isFullActiveStaff();
         allow list: if isVerifiedSignedIn() && isValidId(itemId) && (
           isBootstrappedAdmin() ||
           resource.data.ownerUid == request.auth.uid ||
@@ -1253,7 +1325,7 @@ service cloud.firestore {
           request.auth.uid in incoming().staffUids &&
           incoming().createdAt == request.time &&
           existsAfter(/databases/$(database)/documents/inventoryItems/$(itemId)) &&
-          isActiveStaff();
+          isFullActiveStaff();
         allow update: if false;
         allow delete: if isManagement() && isValidId(itemId) && isValidId(movementId);
       }
@@ -1261,7 +1333,7 @@ service cloud.firestore {
 
     // 14. Goods Received Notes (GRN)
     match /goodsReceipts/{grnId} {
-      allow get: if isVerifiedSignedIn() && isValidId(grnId) && isActiveStaff();
+      allow get: if isVerifiedSignedIn() && isValidId(grnId) && isFullActiveStaff();
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
@@ -1274,7 +1346,7 @@ service cloud.firestore {
         request.auth.uid in incoming().staffUids &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        isActiveStaff();
+        isFullActiveStaff();
       allow update: if isVerifiedSignedIn() &&
         isValidId(grnId) &&
         isValidGoodsReceipt(incoming()) &&
@@ -1326,7 +1398,7 @@ service cloud.firestore {
 
     // 16. Chart of Accounts (Editable Banks, Mobile Money, Cash & Ledger Accounts)
     match /chartOfAccounts/{accountId} {
-      allow get: if isVerifiedSignedIn() && isValidId(accountId) && isActiveStaff();
+      allow get: if isVerifiedSignedIn() && isValidId(accountId) && isFullActiveStaff();
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
@@ -1399,7 +1471,7 @@ service cloud.firestore {
 
     // 18. Internal Requisitions (Purchase, Material Issue & Petty Cash)
     match /requisitions/{requisitionId} {
-      allow get: if isVerifiedSignedIn() && isValidId(requisitionId) && isActiveStaff();
+      allow get: if isVerifiedSignedIn() && isValidId(requisitionId) && isFullActiveStaff();
       allow list: if isVerifiedSignedIn() && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
@@ -1414,7 +1486,7 @@ service cloud.firestore {
         incoming().status in ['Draft', 'Submitted'] &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        isActiveStaff();
+        isFullActiveStaff();
       allow update: if isVerifiedSignedIn() &&
         isValidId(requisitionId) &&
         isValidRequisition(incoming()) &&

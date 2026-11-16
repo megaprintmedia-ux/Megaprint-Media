@@ -37,7 +37,7 @@ import {
   handleFirestoreError,
   OperationType,
 } from '../lib/firebase';
-import { Department, UserProfile, UserRole } from '../types/erp';
+import { Department, TaxAccessScope, UserProfile, UserRole } from '../types/erp';
 
 const BOOTSTRAPPED_ADMIN_EMAIL = 'megaprintmedia@gmail.com';
 
@@ -198,6 +198,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
             displayName: string;
             role: UserRole;
             department: Department;
+            taxScope: TaxAccessScope;
             commissionRatePct: number;
             ownerUid: string;
           } | null = null;
@@ -220,6 +221,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
                   displayName: String(invData.displayName || ''),
                   role: invData.role as UserRole,
                   department: invData.department as Department,
+                  taxScope: invData.taxScope === 'vat_only' ? 'vat_only' : 'all',
                   commissionRatePct: Number(invData.commissionRatePct) || 0,
                   ownerUid: String(invData.ownerUid || ''),
                 };
@@ -246,6 +248,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
               role: matchedInvite.role,
               department: matchedInvite.department,
               status: 'active',
+              taxScope:
+                matchedInvite.role === 'accounts' ? matchedInvite.taxScope : 'all',
               commissionRatePct:
                 matchedInvite.role === 'sales' ? matchedInvite.commissionRatePct : 0,
               inviteId: matchedInvite.id,
@@ -273,6 +277,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
               role: initialRole,
               department: roleToDepartment(initialRole),
               status: initialStatus,
+              taxScope: 'all' as TaxAccessScope,
               commissionRatePct: initialRole === 'sales' ? 5 : 0,
               adminUids: [firebaseUser.uid],
               createdAt: serverTimestamp(),
