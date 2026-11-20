@@ -55,7 +55,8 @@ export type NavSection =
   | 'time-tracking'
   | 'hr'
   | 'my-account'
-  | 'settings';
+  | 'settings'
+  | 'legacy-import';
 
 export interface UserProfile {
   id: string;
@@ -105,11 +106,161 @@ export interface Client {
   address: string;
   paymentTermsDays: number;
   notes: string;
+  legacySourceId?: string;
+  legacyPricingMode?: string;
+  creditApproved?: boolean;
+  creditLimitUSD?: number;
+  importRunId?: string;
   ownerUid: string;
   staffUids: string[];
   createdAt?: unknown;
   updatedAt?: unknown;
 }
+
+export interface Supplier {
+  id: string;
+  name: string;
+  contactName: string;
+  phone: string;
+  email: string;
+  address: string;
+  zimraTin?: string;
+  vatRegNumber?: string;
+  isVatRegistered?: boolean;
+  notes: string;
+  legacySourceKey?: string;
+  importRunId?: string;
+  ownerUid: string;
+  staffUids: string[];
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type OpeningBalanceRecordType =
+  | 'receivable'
+  | 'customer_credit'
+  | 'supplier_payable_invoice'
+  | 'supplier_opening_accrual';
+
+export interface OpeningBalanceRecord {
+  id: string;
+  recordType: OpeningBalanceRecordType;
+  sourceKey: string;
+  sourceReference: string;
+  counterpartyId: string;
+  counterpartySourceId: string;
+  counterpartyName: string;
+  recordedDate: string;
+  dueDate: string;
+  outstandingUSD: number;
+  migrationTreatment: string;
+  sourceStatus: string;
+  matchedSupplierInvoiceId: string;
+  matchedSupplierInvoiceNo: string;
+  isMatchedExisting: boolean;
+  notes: string;
+  preservedMetadata?: Record<string, string>;
+  asOfDate: string;
+  importRunId: string;
+  ownerUid: string;
+  viewerUids: string[];
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface MigrationSystemUserReference {
+  text: string;
+  value: string;
+  recordType?: string;
+  employeeRecordAvailable?: boolean;
+  createLoginOrInvite?: boolean;
+}
+
+export interface MigrationReferenceTableRow {
+  cells: string[];
+}
+
+export interface MigrationReferenceTable {
+  id: string;
+  tableName: 'liabilityBalances' | 'payableLedger';
+  headers: string[];
+  rows: MigrationReferenceTableRow[];
+  rowCount: number;
+  importRunId: string;
+  ownerUid: string;
+  adminUids: string[];
+  createdAt?: unknown;
+}
+
+export type MigrationRunStatus = 'in_progress' | 'completed' | 'partial_failed';
+
+export type MigrationRecordCategory =
+  | 'customer'
+  | 'supplier'
+  | 'account'
+  | 'pending_job'
+  | 'receivable'
+  | 'customer_credit'
+  | 'supplier_payable';
+
+export type MigrationRecordOutcome =
+  | 'created'
+  | 'matched'
+  | 'skipped'
+  | 'failed';
+
+export interface MigrationRunRecord {
+  id: string;
+  importRunId: string;
+  category: MigrationRecordCategory;
+  sourceKey: string;
+  displayLabel: string;
+  outcome: MigrationRecordOutcome;
+  targetCollection: string;
+  targetDocId: string;
+  errorMessage: string;
+  ownerUid: string;
+  adminUids: string[];
+  updatedAt?: unknown;
+}
+
+export interface MigrationRun {
+  id: string;
+  sourceSystem: string;
+  targetSystem: string;
+  asOfDate: string;
+  payloadFingerprint: string;
+  status: MigrationRunStatus;
+  executedByUid: string;
+  executedByName: string;
+  totalPlanned: number;
+  createdCount: number;
+  matchedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  grossReceivablesUSD: number;
+  unappliedCreditsUSD: number;
+  netReceivablesUSD: number;
+  importedPayablesUSD: number;
+  matchedExistingPayablesUSD: number;
+  accrualPayablesUSD: number;
+  totalSupplierPayablesUSD: number;
+  trialBalanceDebitUSD: number;
+  trialBalanceCreditUSD: number;
+  controlsVerified: boolean;
+  systemUserReferences: MigrationSystemUserReference[];
+  alreadyCreatedInTargetCount: number;
+  constraintsCount: number;
+  hasLiabilityBalancesTable: boolean;
+  hasPayableLedgerTable: boolean;
+  failedKeys: string[];
+  lastError: string;
+  ownerUid: string;
+  adminUids: string[];
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
 
 export interface SizeBreakdown {
   XS: number;
@@ -149,7 +300,7 @@ export interface Job {
   tailoringMeasurements: string;
   checklist: ProductionChecklist;
   pricingMode: PricingMode;
-  vatTreatment: VatTreatment;
+  vatTreatment: VatTreatment | 'unknown';
   vatRate: number;
   unitPrice: number;
   netTotal: number;
@@ -168,6 +319,14 @@ export interface Job {
   commissionAmount?: number;
   commissionStatus?: CommissionStatus;
   commissionPaidDate?: string;
+  legacySourceReference?: string;
+  legacySourceStatus?: string;
+  legacyDivision?: string;
+  legacyPreparedBy?: string;
+  legacySalesOwner?: string;
+  legacyValueUSD?: number;
+  legacyLinesExtracted?: boolean;
+  importRunId?: string;
   ownerUid: string;
   staffUids: string[];
   createdAt?: unknown;
@@ -584,6 +743,14 @@ export interface ChartAccount {
   isCashBookAccount: boolean;
   isActive: boolean;
   notes: string;
+  legacySourceCode?: string;
+  legacyParentCode?: string;
+  legacyCurrencyLabel?: string;
+  legacyNormalBalanceUSD?: number;
+  legacyTrialDebitUSD?: number;
+  legacyTrialCreditUSD?: number;
+  legacyImported?: boolean;
+  importRunId?: string;
   ownerUid: string;
   staffUids: string[];
   createdAt?: unknown;

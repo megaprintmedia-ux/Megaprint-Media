@@ -43,6 +43,10 @@ service cloud.firestore {
       return val is number && val >= 0;
     }
 
+    function isFiniteNum(val) {
+      return val is number && val >= -1000000000000 && val <= 1000000000000;
+    }
+
     function isBoundedUidList(arr) {
       return arr is list && arr.size() >= 1 && arr.size() <= 10 && arr[0] is string && arr[0].size() >= 1 && arr[0].size() <= 128;
     }
@@ -167,14 +171,15 @@ service cloud.firestore {
     }
 
     function isValidClient(data) {
-      return data.keys().hasAll(['companyName', 'contactName', 'paymentTermsDays', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt']) &&
+      return data.keys().hasAll(['companyName', 'paymentTermsDays', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly([
           'companyName', 'contactName', 'email', 'phone', 'taxPin', 'zimraTin',
           'vatRegNumber', 'isVatRegistered', 'address', 'paymentTermsDays',
-          'notes', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+          'notes', 'legacySourceId', 'legacyPricingMode', 'creditApproved',
+          'creditLimitUSD', 'importRunId', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.companyName, 160) &&
-        isNonEmptyStr(data.contactName, 120) &&
+        (!('contactName' in data) || isOptionalStr(data.contactName, 120)) &&
         (!('email' in data) || isOptionalStr(data.email, 200)) &&
         (!('phone' in data) || isOptionalStr(data.phone, 40)) &&
         (!('taxPin' in data) || isOptionalStr(data.taxPin, 64)) &&
@@ -184,10 +189,176 @@ service cloud.firestore {
         (!('address' in data) || isOptionalStr(data.address, 300)) &&
         data.paymentTermsDays is number && data.paymentTermsDays >= 0 && data.paymentTermsDays <= 365 &&
         (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
+        (!('legacySourceId' in data) || isOptionalStr(data.legacySourceId, 128)) &&
+        (!('legacyPricingMode' in data) || isOptionalStr(data.legacyPricingMode, 64)) &&
+        (!('creditApproved' in data) || data.creditApproved is bool) &&
+        (!('creditLimitUSD' in data) || isNonNegativeNum(data.creditLimitUSD)) &&
+        (!('importRunId' in data) || isOptionalStr(data.importRunId, 128)) &&
         isValidId(data.ownerUid) &&
         isBoundedUidList(data.staffUids) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
+    }
+
+    function isValidSupplier(data) {
+      return data.keys().hasAll(['name', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'name', 'contactName', 'phone', 'email', 'address',
+          'zimraTin', 'vatRegNumber', 'isVatRegistered', 'notes',
+          'legacySourceKey', 'importRunId',
+          'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.name, 160) &&
+        (!('contactName' in data) || isOptionalStr(data.contactName, 120)) &&
+        (!('phone' in data) || isOptionalStr(data.phone, 40)) &&
+        (!('email' in data) || isOptionalStr(data.email, 200)) &&
+        (!('address' in data) || isOptionalStr(data.address, 300)) &&
+        (!('zimraTin' in data) || isOptionalStr(data.zimraTin, 64)) &&
+        (!('vatRegNumber' in data) || isOptionalStr(data.vatRegNumber, 64)) &&
+        (!('isVatRegistered' in data) || data.isVatRegistered is bool) &&
+        (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
+        (!('legacySourceKey' in data) || isOptionalStr(data.legacySourceKey, 128)) &&
+        (!('importRunId' in data) || isOptionalStr(data.importRunId, 128)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.staffUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidOpeningBalanceRecord(data) {
+      return data.keys().hasAll([
+          'recordType', 'sourceKey', 'sourceReference', 'counterpartyName',
+          'outstandingUSD', 'isMatchedExisting', 'asOfDate', 'importRunId',
+          'ownerUid', 'viewerUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'recordType', 'sourceKey', 'sourceReference', 'counterpartyId',
+          'counterpartySourceId', 'counterpartyName', 'recordedDate', 'dueDate',
+          'outstandingUSD', 'migrationTreatment', 'sourceStatus',
+          'matchedSupplierInvoiceId', 'matchedSupplierInvoiceNo',
+          'isMatchedExisting', 'notes', 'preservedMetadata',
+          'asOfDate', 'importRunId', 'ownerUid', 'viewerUids',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.recordType in ['receivable', 'customer_credit', 'supplier_payable_invoice', 'supplier_opening_accrual'] &&
+        isNonEmptyStr(data.sourceKey, 160) &&
+        isNonEmptyStr(data.sourceReference, 120) &&
+        (!('counterpartyId' in data) || isOptionalStr(data.counterpartyId, 128)) &&
+        (!('counterpartySourceId' in data) || isOptionalStr(data.counterpartySourceId, 128)) &&
+        isNonEmptyStr(data.counterpartyName, 160) &&
+        (!('recordedDate' in data) || isOptionalStr(data.recordedDate, 32)) &&
+        (!('dueDate' in data) || isOptionalStr(data.dueDate, 32)) &&
+        isNonNegativeNum(data.outstandingUSD) &&
+        (!('migrationTreatment' in data) || isOptionalStr(data.migrationTreatment, 200)) &&
+        (!('sourceStatus' in data) || isOptionalStr(data.sourceStatus, 80)) &&
+        (!('matchedSupplierInvoiceId' in data) || isOptionalStr(data.matchedSupplierInvoiceId, 128)) &&
+        (!('matchedSupplierInvoiceNo' in data) || isOptionalStr(data.matchedSupplierInvoiceNo, 80)) &&
+        data.isMatchedExisting is bool &&
+        (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
+        (!('preservedMetadata' in data) || (data.preservedMetadata is map && data.preservedMetadata.size() <= 20)) &&
+        isNonEmptyStr(data.asOfDate, 32) &&
+        isNonEmptyStr(data.importRunId, 128) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.viewerUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMigrationRun(data) {
+      return data.keys().hasAll([
+          'sourceSystem', 'targetSystem', 'asOfDate', 'payloadFingerprint',
+          'status', 'executedByUid', 'executedByName', 'totalPlanned',
+          'createdCount', 'matchedCount', 'skippedCount', 'failedCount',
+          'controlsVerified', 'ownerUid', 'adminUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'sourceSystem', 'targetSystem', 'asOfDate', 'payloadFingerprint',
+          'status', 'executedByUid', 'executedByName', 'totalPlanned',
+          'createdCount', 'matchedCount', 'skippedCount', 'failedCount',
+          'grossReceivablesUSD', 'unappliedCreditsUSD', 'netReceivablesUSD',
+          'importedPayablesUSD', 'matchedExistingPayablesUSD', 'accrualPayablesUSD',
+          'totalSupplierPayablesUSD', 'trialBalanceDebitUSD', 'trialBalanceCreditUSD',
+          'controlsVerified', 'systemUserReferences', 'alreadyCreatedInTargetCount',
+          'constraintsCount', 'hasLiabilityBalancesTable', 'hasPayableLedgerTable',
+          'failedKeys', 'lastError', 'ownerUid', 'adminUids', 'createdAt', 'updatedAt'
+        ]) &&
+        isNonEmptyStr(data.sourceSystem, 120) &&
+        isNonEmptyStr(data.targetSystem, 120) &&
+        isNonEmptyStr(data.asOfDate, 32) &&
+        isNonEmptyStr(data.payloadFingerprint, 128) &&
+        data.status in ['in_progress', 'completed', 'partial_failed'] &&
+        isValidId(data.executedByUid) &&
+        isNonEmptyStr(data.executedByName, 120) &&
+        isNonNegativeNum(data.totalPlanned) &&
+        isNonNegativeNum(data.createdCount) &&
+        isNonNegativeNum(data.matchedCount) &&
+        isNonNegativeNum(data.skippedCount) &&
+        isNonNegativeNum(data.failedCount) &&
+        (!('grossReceivablesUSD' in data) || isNonNegativeNum(data.grossReceivablesUSD)) &&
+        (!('unappliedCreditsUSD' in data) || isNonNegativeNum(data.unappliedCreditsUSD)) &&
+        (!('netReceivablesUSD' in data) || isFiniteNum(data.netReceivablesUSD)) &&
+        (!('importedPayablesUSD' in data) || isNonNegativeNum(data.importedPayablesUSD)) &&
+        (!('matchedExistingPayablesUSD' in data) || isNonNegativeNum(data.matchedExistingPayablesUSD)) &&
+        (!('accrualPayablesUSD' in data) || isNonNegativeNum(data.accrualPayablesUSD)) &&
+        (!('totalSupplierPayablesUSD' in data) || isNonNegativeNum(data.totalSupplierPayablesUSD)) &&
+        (!('trialBalanceDebitUSD' in data) || isNonNegativeNum(data.trialBalanceDebitUSD)) &&
+        (!('trialBalanceCreditUSD' in data) || isNonNegativeNum(data.trialBalanceCreditUSD)) &&
+        data.controlsVerified is bool &&
+        (!('systemUserReferences' in data) || (data.systemUserReferences is list && data.systemUserReferences.size() <= 200 && (data.systemUserReferences.size() == 0 || data.systemUserReferences[0] is map))) &&
+        (!('alreadyCreatedInTargetCount' in data) || isNonNegativeNum(data.alreadyCreatedInTargetCount)) &&
+        (!('constraintsCount' in data) || isNonNegativeNum(data.constraintsCount)) &&
+        (!('hasLiabilityBalancesTable' in data) || data.hasLiabilityBalancesTable is bool) &&
+        (!('hasPayableLedgerTable' in data) || data.hasPayableLedgerTable is bool) &&
+        (!('failedKeys' in data) || (data.failedKeys is list && data.failedKeys.size() <= 500 && (data.failedKeys.size() == 0 || data.failedKeys[0] is string))) &&
+        (!('lastError' in data) || isOptionalStr(data.lastError, 500)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.adminUids) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMigrationRunRecord(data, runId) {
+      return data.keys().hasAll([
+          'importRunId', 'category', 'sourceKey', 'displayLabel',
+          'outcome', 'ownerUid', 'adminUids', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'importRunId', 'category', 'sourceKey', 'displayLabel',
+          'outcome', 'targetCollection', 'targetDocId', 'errorMessage',
+          'ownerUid', 'adminUids', 'updatedAt'
+        ]) &&
+        data.importRunId == runId &&
+        isValidId(data.importRunId) &&
+        data.category in ['customer', 'supplier', 'account', 'pending_job', 'receivable', 'customer_credit', 'supplier_payable'] &&
+        isNonEmptyStr(data.sourceKey, 160) &&
+        isNonEmptyStr(data.displayLabel, 200) &&
+        data.outcome in ['created', 'matched', 'skipped', 'failed'] &&
+        (!('targetCollection' in data) || isOptionalStr(data.targetCollection, 64)) &&
+        (!('targetDocId' in data) || isOptionalStr(data.targetDocId, 128)) &&
+        (!('errorMessage' in data) || isOptionalStr(data.errorMessage, 500)) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.adminUids) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMigrationReferenceTable(data, runId) {
+      return data.keys().hasAll([
+          'tableName', 'headers', 'rows', 'rowCount',
+          'importRunId', 'ownerUid', 'adminUids', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'tableName', 'headers', 'rows', 'rowCount',
+          'importRunId', 'ownerUid', 'adminUids', 'createdAt'
+        ]) &&
+        data.importRunId == runId &&
+        isValidId(data.importRunId) &&
+        data.tableName in ['liabilityBalances', 'payableLedger'] &&
+        data.headers is list && data.headers.size() <= 40 && (data.headers.size() == 0 || data.headers[0] is string) &&
+        data.rows is list && data.rows.size() <= 500 && (data.rows.size() == 0 || data.rows[0] is map) &&
+        isNonNegativeNum(data.rowCount) &&
+        isValidId(data.ownerUid) &&
+        isBoundedUidList(data.adminUids) &&
+        data.createdAt is timestamp;
     }
 
     function isValidJob(data) {
@@ -206,6 +377,9 @@ service cloud.firestore {
           'assignedSalesUid', 'assignedSalesName', 'assignedProductionName',
           'commissionRatePct', 'commissionBasis', 'commissionAmount',
           'commissionStatus', 'commissionPaidDate',
+          'legacySourceReference', 'legacySourceStatus', 'legacyDivision',
+          'legacyPreparedBy', 'legacySalesOwner', 'legacyValueUSD',
+          'legacyLinesExtracted', 'importRunId',
           'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.jobNumber, 40) &&
@@ -219,13 +393,13 @@ service cloud.firestore {
         (!('printMethod' in data) || isOptionalStr(data.printMethod, 120)) &&
         (!('substrateOrFabric' in data) || isOptionalStr(data.substrateOrFabric, 160)) &&
         (!('colorSpecs' in data) || isOptionalStr(data.colorSpecs, 160)) &&
-        data.quantity is number && data.quantity >= 1 &&
+        ((data.quantity is number && data.quantity >= 1) || ('legacyLinesExtracted' in data && data.legacyLinesExtracted == false && data.quantity == 0)) &&
         (!('sizeBreakdown' in data) || data.sizeBreakdown is map) &&
         (!('artworkNotes' in data) || isOptionalStr(data.artworkNotes, 2000)) &&
         (!('tailoringMeasurements' in data) || isOptionalStr(data.tailoringMeasurements, 2000)) &&
         (!('checklist' in data) || data.checklist is map) &&
         data.pricingMode in ['exclusive', 'inclusive'] &&
-        data.vatTreatment in ['standard', 'zero', 'exempt'] &&
+        (data.vatTreatment in ['standard', 'zero', 'exempt'] || ('legacyLinesExtracted' in data && data.legacyLinesExtracted == false && data.vatTreatment == 'unknown')) &&
         data.vatRate is number && data.vatRate >= 0 && data.vatRate <= 50 &&
         (!('unitPrice' in data) || isNonNegativeNum(data.unitPrice)) &&
         isNonNegativeNum(data.netTotal) &&
@@ -244,6 +418,14 @@ service cloud.firestore {
         (!('commissionAmount' in data) || isNonNegativeNum(data.commissionAmount)) &&
         (!('commissionStatus' in data) || data.commissionStatus in ['Pending', 'Earned', 'Approved', 'Paid']) &&
         (!('commissionPaidDate' in data) || isOptionalStr(data.commissionPaidDate, 32)) &&
+        (!('legacySourceReference' in data) || isOptionalStr(data.legacySourceReference, 120)) &&
+        (!('legacySourceStatus' in data) || isOptionalStr(data.legacySourceStatus, 80)) &&
+        (!('legacyDivision' in data) || isOptionalStr(data.legacyDivision, 120)) &&
+        (!('legacyPreparedBy' in data) || isOptionalStr(data.legacyPreparedBy, 120)) &&
+        (!('legacySalesOwner' in data) || isOptionalStr(data.legacySalesOwner, 120)) &&
+        (!('legacyValueUSD' in data) || isNonNegativeNum(data.legacyValueUSD)) &&
+        (!('legacyLinesExtracted' in data) || data.legacyLinesExtracted is bool) &&
+        (!('importRunId' in data) || isOptionalStr(data.importRunId, 128)) &&
         isValidId(data.ownerUid) &&
         isBoundedUidList(data.staffUids) &&
         data.createdAt is timestamp &&
@@ -716,6 +898,9 @@ service cloud.firestore {
           'code', 'name', 'accountType', 'subType', 'currency',
           'bankName', 'accountNumber', 'branch', 'openingBalance',
           'isCashBookAccount', 'isActive', 'notes',
+          'legacySourceCode', 'legacyParentCode', 'legacyCurrencyLabel',
+          'legacyNormalBalanceUSD', 'legacyTrialDebitUSD', 'legacyTrialCreditUSD',
+          'legacyImported', 'importRunId',
           'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.code, 24) &&
@@ -733,6 +918,14 @@ service cloud.firestore {
         data.isCashBookAccount is bool &&
         data.isActive is bool &&
         (!('notes' in data) || isOptionalStr(data.notes, 500)) &&
+        (!('legacySourceCode' in data) || isOptionalStr(data.legacySourceCode, 40)) &&
+        (!('legacyParentCode' in data) || isOptionalStr(data.legacyParentCode, 40)) &&
+        (!('legacyCurrencyLabel' in data) || isOptionalStr(data.legacyCurrencyLabel, 40)) &&
+        (!('legacyNormalBalanceUSD' in data) || isFiniteNum(data.legacyNormalBalanceUSD)) &&
+        (!('legacyTrialDebitUSD' in data) || isNonNegativeNum(data.legacyTrialDebitUSD)) &&
+        (!('legacyTrialCreditUSD' in data) || isNonNegativeNum(data.legacyTrialCreditUSD)) &&
+        (!('legacyImported' in data) || data.legacyImported is bool) &&
+        (!('importRunId' in data) || isOptionalStr(data.importRunId, 128)) &&
         isValidId(data.ownerUid) &&
         isBoundedUidList(data.staffUids) &&
         data.createdAt is timestamp &&
@@ -1526,6 +1719,137 @@ service cloud.firestore {
         isManagement() ||
         (existing().ownerUid == request.auth.uid && existing().status == 'Draft')
       );
+    }
+
+    // 19. Suppliers Master Register
+    match /suppliers/{supplierId} {
+      allow get: if isVerifiedSignedIn() && isValidId(supplierId) && isFullActiveStaff();
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
+      allow create: if isVerifiedSignedIn() &&
+        isValidId(supplierId) &&
+        isValidSupplier(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().staffUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isFullActiveStaff();
+      allow update: if isVerifiedSignedIn() &&
+        isValidId(supplierId) &&
+        isValidSupplier(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isManagement() ||
+          ((isAccountsOrManagement() || isProductionOrManagement()) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'contactName', 'phone', 'email', 'address',
+              'zimraTin', 'vatRegNumber', 'isVatRegistered', 'notes',
+              'staffUids', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isManagement() && isValidId(supplierId);
+    }
+
+    // 20. Historical Opening Balances (Excluded from VAT-Only Auditors)
+    match /openingBalances/{recordId} {
+      allow get: if isVerifiedSignedIn() && isValidId(recordId) && (
+        isAccountsOrManagement() ||
+        (isSalesOrManagement() && existing().recordType in ['receivable', 'customer_credit'])
+      );
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        ('viewerUids' in resource.data && resource.data.viewerUids is list && resource.data.viewerUids.size() <= 10 && request.auth.uid in resource.data.viewerUids)
+      );
+      allow create: if isManagement() &&
+        isValidId(recordId) &&
+        isValidOpeningBalanceRecord(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().viewerUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isManagement() &&
+        isValidId(recordId) &&
+        isValidOpeningBalanceRecord(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+      allow delete: if isManagement() && isValidId(recordId);
+    }
+
+    // 21. Legacy Data Import Runs & Audit Snapshots (Strictly Management-Only)
+    match /migrationRuns/{runId} {
+      allow get: if isManagement() && isValidId(runId);
+      allow list: if isManagement() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        ('adminUids' in resource.data && resource.data.adminUids is list && resource.data.adminUids.size() <= 10 && request.auth.uid in resource.data.adminUids)
+      );
+      allow create: if isManagement() &&
+        isValidId(runId) &&
+        isValidMigrationRun(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        request.auth.uid in incoming().adminUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isManagement() &&
+        isValidId(runId) &&
+        isValidMigrationRun(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+      allow delete: if isManagement() && isValidId(runId);
+
+      match /records/{recordId} {
+        allow get: if isManagement() && isValidId(runId) && isValidId(recordId) &&
+          exists(/databases/$(database)/documents/migrationRuns/$(runId));
+        allow list: if isManagement() && isValidId(runId) && (
+          isBootstrappedAdmin() ||
+          resource.data.ownerUid == request.auth.uid ||
+          ('adminUids' in resource.data && resource.data.adminUids is list && resource.data.adminUids.size() <= 10 && request.auth.uid in resource.data.adminUids)
+        );
+        allow create: if isManagement() &&
+          isValidId(runId) &&
+          isValidId(recordId) &&
+          isValidMigrationRunRecord(incoming(), runId) &&
+          incoming().ownerUid == request.auth.uid &&
+          request.auth.uid in incoming().adminUids &&
+          incoming().updatedAt == request.time &&
+          existsAfter(/databases/$(database)/documents/migrationRuns/$(runId));
+        allow update: if isManagement() &&
+          isValidId(runId) &&
+          isValidId(recordId) &&
+          isValidMigrationRunRecord(incoming(), runId) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().updatedAt == request.time;
+        allow delete: if isManagement() && isValidId(runId) && isValidId(recordId);
+      }
+
+      match /tables/{tableId} {
+        allow get: if isManagement() && isValidId(runId) && isValidId(tableId) &&
+          exists(/databases/$(database)/documents/migrationRuns/$(runId));
+        allow list: if isManagement() && isValidId(runId) && (
+          isBootstrappedAdmin() ||
+          resource.data.ownerUid == request.auth.uid ||
+          ('adminUids' in resource.data && resource.data.adminUids is list && resource.data.adminUids.size() <= 10 && request.auth.uid in resource.data.adminUids)
+        );
+        allow create: if isManagement() &&
+          isValidId(runId) &&
+          isValidId(tableId) &&
+          isValidMigrationReferenceTable(incoming(), runId) &&
+          incoming().ownerUid == request.auth.uid &&
+          request.auth.uid in incoming().adminUids &&
+          incoming().createdAt == request.time &&
+          existsAfter(/databases/$(database)/documents/migrationRuns/$(runId));
+        allow update: if false;
+        allow delete: if isManagement() && isValidId(runId) && isValidId(tableId);
+      }
     }
   }
 }

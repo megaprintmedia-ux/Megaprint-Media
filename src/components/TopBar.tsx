@@ -31,6 +31,7 @@ const SECTION_TITLES: Record<NavSection, string> = {
   hr: 'HR & Payroll Solutions',
   'my-account': 'My Account & Sales Commissions',
   settings: 'Team & Company Settings',
+  'legacy-import': 'Legacy Data Import',
 };
 
 const ROLE_LABELS: Record<UserRole, string> = {

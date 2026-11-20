@@ -27,6 +27,7 @@ import { TimeTrackingView } from './components/TimeTrackingView';
 import { HrPayrollView } from './components/HrPayrollView';
 import { MyAccountView } from './components/MyAccountView';
 import { SettingsTeamView } from './components/SettingsTeamView';
+import { LegacyImportView } from './components/LegacyImportView';
 
 const DEFAULT_SECTION_BY_ROLE: Record<UserRole, NavSection> = {
   management: 'dashboard',
@@ -272,10 +273,15 @@ const ErpWorkspace: React.FC = () => {
   const isVatOnlyView =
     effectiveRole === 'accounts' && effectiveTaxScope === 'vat_only';
 
+  const isManagementUser =
+    profile.role === 'management' && effectiveRole === 'management' && !isVatOnlyView;
+
   const visibleSection: NavSection =
     isVatOnlyView && !VAT_ONLY_ALLOWED_SECTIONS.includes(activeSection)
       ? 'invoices'
-      : activeSection;
+      : activeSection === 'legacy-import' && !isManagementUser
+        ? DEFAULT_SECTION_BY_ROLE[effectiveRole]
+        : activeSection;
 
   const scopedInvoices = isVatOnlyView
     ? erp.invoices.filter((i) => computeInvoiceVatReportable(i))
@@ -304,6 +310,9 @@ const ErpWorkspace: React.FC = () => {
   };
 
   const handleCreateInvoiceFromJob = (job: Job) => {
+    if (job.legacyLinesExtracted === false || job.vatTreatment === 'unknown') {
+      return;
+    }
     setSelectedJobCard(null);
     setPrefillInvoiceJob(job);
     setActiveSection('invoices');
@@ -392,6 +401,7 @@ const ErpWorkspace: React.FC = () => {
                   jobs={erp.jobs}
                   invoices={erp.invoices}
                   cashBookEntries={erp.cashBookEntries}
+                  openingBalances={erp.openingBalances}
                   onCreateClient={erp.createClient}
                   onUpdateClient={erp.updateClient}
                 />
@@ -468,7 +478,10 @@ const ErpWorkspace: React.FC = () => {
                   settings={erp.settings}
                   chartOfAccounts={erp.chartOfAccounts}
                   supplierInvoices={scopedSupplierInvoices}
+                  suppliers={erp.suppliers}
+                  openingBalances={erp.openingBalances}
                   jobs={erp.jobs}
+                  onCreateSupplier={erp.createSupplier}
                   onCreateSupplierInvoice={erp.createSupplierInvoice}
                   onUpdateSupplierInvoice={erp.updateSupplierInvoice}
                   onRecordSupplierPayment={erp.recordSupplierPayment}
@@ -501,6 +514,7 @@ const ErpWorkspace: React.FC = () => {
                   invoices={scopedInvoices}
                   expenses={scopedExpenses}
                   supplierInvoices={scopedSupplierInvoices}
+                  openingBalances={erp.openingBalances}
                   jobs={erp.jobs}
                   onCreateExpense={erp.createExpense}
                   onUpdateExpense={erp.updateExpense}
@@ -591,6 +605,23 @@ const ErpWorkspace: React.FC = () => {
                   onCreateUserInvite={erp.createUserInvite}
                   onUpdateUserInviteStatus={erp.updateUserInviteStatus}
                   onDeleteUserInvite={erp.deleteUserInvite}
+                  onOpenLegacyImport={() => setActiveSection('legacy-import')}
+                />
+              )}
+
+              {visibleSection === 'legacy-import' && isManagementUser && (
+                <LegacyImportView
+                  role={effectiveRole}
+                  settings={erp.settings}
+                  clients={erp.clients}
+                  suppliers={erp.suppliers}
+                  chartOfAccounts={erp.chartOfAccounts}
+                  jobs={erp.jobs}
+                  supplierInvoices={erp.supplierInvoices}
+                  openingBalances={erp.openingBalances}
+                  migrationRuns={erp.migrationRuns}
+                  onExecuteImport={erp.executeLegacyImport}
+                  onSubscribeRunDetails={erp.subscribeMigrationRunDetails}
                 />
               )}
             </>

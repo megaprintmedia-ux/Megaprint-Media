@@ -68,6 +68,9 @@ const EMPTY_SIZES: SizeBreakdown = {
   Custom: 0,
 };
 
+const isLegacyUnextracted = (job: Job): boolean =>
+  job.legacyLinesExtracted === false || job.vatTreatment === 'unknown';
+
 export const JobsView: React.FC<JobsViewProps> = ({
   mode,
   role,
@@ -334,6 +337,7 @@ export const JobsView: React.FC<JobsViewProps> = ({
             filteredJobs.map((job) => {
               const costing = calculateJobCosting(job);
               const doneSteps = Object.values(job.checklist || {}).filter(Boolean).length;
+              const unextracted = isLegacyUnextracted(job);
               return (
                 <div
                   key={job.id}
@@ -351,7 +355,8 @@ export const JobsView: React.FC<JobsViewProps> = ({
                       {job.title}
                     </h3>
                     <div className="text-xs text-slate-500">
-                      {job.clientName} · {job.category} · Qty {job.quantity}
+                      {job.clientName} · {job.category} ·{' '}
+                      {unextracted ? 'Qty Unknown (Specs Missing)' : `Qty ${job.quantity}`}
                     </div>
                   </div>
 
@@ -365,10 +370,19 @@ export const JobsView: React.FC<JobsViewProps> = ({
                     {role !== 'production' && (
                       <div className="grid grid-cols-3 gap-2 pt-1">
                         <div>
-                          <div className="text-[11px] text-slate-400">Net Price</div>
-                          <div className="font-mono-nums font-semibold text-slate-900">
-                            {formatMoney(job.netTotal, settings.currency)}
+                          <div className="text-[11px] text-slate-400">
+                            {unextracted ? 'Legacy Value' : 'Net Price'}
                           </div>
+                          <div className="font-mono-nums font-semibold text-slate-900">
+                            {unextracted
+                              ? formatMoney(job.legacyValueUSD ?? 0, 'USD')
+                              : formatMoney(job.netTotal, settings.currency)}
+                          </div>
+                          {unextracted && (
+                            <div className="text-[10px] text-amber-700 font-medium">
+                              Tax Split Unknown
+                            </div>
+                          )}
                         </div>
                         <div>
                           <div className="text-[11px] text-slate-400">Actual Cost</div>
@@ -382,15 +396,21 @@ export const JobsView: React.FC<JobsViewProps> = ({
                         </div>
                         <div className="text-right">
                           <div className="text-[11px] text-slate-400">Margin</div>
-                          <div
-                            className={`font-mono-nums font-semibold ${
-                              costing.grossMarginPct < 15
-                                ? 'text-red-700'
-                                : 'text-emerald-700'
-                            }`}
-                          >
-                            {costing.grossMarginPct.toFixed(1)}%
-                          </div>
+                          {unextracted ? (
+                            <div className="font-mono-nums font-semibold text-slate-400">
+                              —
+                            </div>
+                          ) : (
+                            <div
+                              className={`font-mono-nums font-semibold ${
+                                costing.grossMarginPct < 15
+                                  ? 'text-red-700'
+                                  : 'text-emerald-700'
+                              }`}
+                            >
+                              {costing.grossMarginPct.toFixed(1)}%
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
@@ -430,6 +450,7 @@ export const JobsView: React.FC<JobsViewProps> = ({
                 <tbody className="divide-y divide-slate-100 text-sm">
                   {filteredJobs.map((job) => {
                     const costing = calculateJobCosting(job);
+                    const unextracted = isLegacyUnextracted(job);
                     return (
                       <tr key={job.id} className="hover:bg-slate-50 transition-colors">
                         <td className="py-3 px-4 font-mono-nums text-xs font-semibold text-blue-700 whitespace-nowrap">
@@ -438,7 +459,9 @@ export const JobsView: React.FC<JobsViewProps> = ({
                         <td className="py-3 px-4 min-w-[220px]">
                           <div className="font-medium text-slate-900">{job.title}</div>
                           <div className="text-xs text-slate-500">
-                            {job.clientName} · Qty {job.quantity} · {job.priority}
+                            {job.clientName} ·{' '}
+                            {unextracted ? 'Qty Unknown (Specs Missing)' : `Qty ${job.quantity}`}{' '}
+                            · {job.priority}
                           </div>
                         </td>
                         <td className="py-3 px-4 text-xs text-slate-700 whitespace-nowrap">
@@ -453,13 +476,32 @@ export const JobsView: React.FC<JobsViewProps> = ({
                         {role !== 'production' && (
                           <>
                             <td className="py-3 px-4 text-right font-mono-nums text-xs text-slate-800 whitespace-nowrap">
-                              {formatMoney(job.netTotal, settings.currency)}
+                              {unextracted ? (
+                                <span className="text-slate-400">— (Specs Missing)</span>
+                              ) : (
+                                formatMoney(job.netTotal, settings.currency)
+                              )}
                             </td>
                             <td className="py-3 px-4 text-right font-mono-nums text-xs text-slate-600 whitespace-nowrap">
-                              {formatMoney(job.vatAmount, settings.currency)}
+                              {unextracted ? (
+                                <span className="text-amber-700 font-medium">
+                                  Tax Unknown
+                                </span>
+                              ) : (
+                                formatMoney(job.vatAmount, settings.currency)
+                              )}
                             </td>
                             <td className="py-3 px-4 text-right font-mono-nums text-xs font-semibold text-slate-900 whitespace-nowrap">
-                              {formatMoney(job.grossTotal, settings.currency)}
+                              {unextracted ? (
+                                <div>
+                                  <div>{formatMoney(job.legacyValueUSD ?? 0, 'USD')}</div>
+                                  <div className="text-[10px] font-normal text-amber-700">
+                                    Legacy Value (Unextracted)
+                                  </div>
+                                </div>
+                              ) : (
+                                formatMoney(job.grossTotal, settings.currency)
+                              )}
                             </td>
                             <td className="py-3 px-4 text-right font-mono-nums text-xs whitespace-nowrap">
                               <span className="text-slate-500">

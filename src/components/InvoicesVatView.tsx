@@ -188,6 +188,13 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
 
   useEffect(() => {
     if (prefillJob) {
+      if (
+        prefillJob.legacyLinesExtracted === false ||
+        prefillJob.vatTreatment === 'unknown'
+      ) {
+        onClearPrefillJob();
+        return;
+      }
       setClientId(prefillJob.clientId);
       setJobId(prefillJob.id);
       setPricingMode(prefillJob.pricingMode);
@@ -268,6 +275,12 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
     const chosenClient = clients.find((c) => c.id === clientId) || clients[0];
     if (!chosenClient || computedLines.length === 0) return;
     const chosenJob = jobs.find((j) => j.id === jobId);
+    if (
+      chosenJob &&
+      (chosenJob.legacyLinesExtracted === false || chosenJob.vatTreatment === 'unknown')
+    ) {
+      return;
+    }
     const clientTin = (chosenClient.zimraTin || chosenClient.taxPin || '').trim();
     const clientVatReg = (chosenClient.vatRegNumber || '').trim();
 
@@ -422,6 +435,12 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
     if (!editingInvoice || !onUpdateInvoice || editComputedLines.length === 0) return;
     const chosenClient = clients.find((c) => c.id === editClientId);
     const chosenJob = jobs.find((j) => j.id === editJobId);
+    if (
+      chosenJob &&
+      (chosenJob.legacyLinesExtracted === false || chosenJob.vatTreatment === 'unknown')
+    ) {
+      return;
+    }
     const cleanTin = editClientTin.trim().toUpperCase();
     const cleanVatReg = editClientVatReg.trim().toUpperCase();
     setSavingEdit(true);
@@ -741,11 +760,16 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
                       className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white"
                     >
                       <option value="">None</option>
-                      {jobs.map((j) => (
-                        <option key={j.id} value={j.id}>
-                          {j.jobNumber} — {j.title}
-                        </option>
-                      ))}
+                      {jobs.map((j) => {
+                        const blocked =
+                          j.legacyLinesExtracted === false || j.vatTreatment === 'unknown';
+                        return (
+                          <option key={j.id} value={j.id} disabled={blocked}>
+                            {j.jobNumber} — {j.title}
+                            {blocked ? ' (Specs Missing — Cannot Invoice)' : ''}
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
                   <div>
@@ -1516,11 +1540,16 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
                     className="w-full border border-slate-200 rounded-md px-3 py-2 bg-white"
                   >
                     <option value="">Direct / None</option>
-                    {jobs.map((j) => (
-                      <option key={j.id} value={j.id}>
-                        {j.jobNumber} — {j.title}
-                      </option>
-                    ))}
+                    {jobs.map((j) => {
+                      const blocked =
+                        j.legacyLinesExtracted === false || j.vatTreatment === 'unknown';
+                      return (
+                        <option key={j.id} value={j.id} disabled={blocked}>
+                          {j.jobNumber} — {j.title}
+                          {blocked ? ' (Specs Missing — Cannot Invoice)' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
                 <div>

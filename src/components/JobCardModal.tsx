@@ -146,6 +146,8 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
   }, [job.id, subscribeJobCosts]);
 
   const costing = calculateJobCosting(job);
+  const isLegacyUnextracted =
+    job.legacyLinesExtracted === false || job.vatTreatment === 'unknown';
   const canEditProduction =
     role === 'management' || role === 'production';
   const canLogCosts =
@@ -246,10 +248,20 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
               (role === 'management' || role === 'accounts' || role === 'sales') && (
                 <button
                   type="button"
-                  onClick={() => onCreateInvoiceFromJob(job)}
-                  className="px-3 py-1.5 rounded-md border border-slate-300 bg-white text-xs font-semibold text-slate-800 hover:bg-slate-50 whitespace-nowrap"
+                  disabled={isLegacyUnextracted}
+                  onClick={() => {
+                    if (!isLegacyUnextracted) onCreateInvoiceFromJob(job);
+                  }}
+                  title={
+                    isLegacyUnextracted
+                      ? 'Invoicing blocked: legacy line specifications and VAT split are unknown'
+                      : 'Create Tax Invoice from this job'
+                  }
+                  className="px-3 py-1.5 rounded-md border border-slate-300 bg-white text-xs font-semibold text-slate-800 hover:bg-slate-50 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
                 >
-                  Create Tax Invoice
+                  {isLegacyUnextracted
+                    ? 'Invoicing Blocked (Specs Missing)'
+                    : 'Create Tax Invoice'}
                 </button>
               )}
             <button
@@ -302,7 +314,7 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
               <div className="text-slate-600">
                 Total Units:{' '}
                 <span className="font-mono-nums font-semibold text-slate-900">
-                  {job.quantity}
+                  {isLegacyUnextracted ? 'Unknown (Specs Missing)' : job.quantity}
                 </span>
               </div>
               {!isTerminal && (
@@ -467,11 +479,27 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                   <h3 className="font-display text-sm font-semibold text-slate-900 mb-3">
                     Job Costing, VAT &amp; Profitability
                   </h3>
+                  {isLegacyUnextracted && (
+                    <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
+                      <strong>Legacy Import — Specs &amp; Tax Split Unknown:</strong>{' '}
+                      Original line specifications, unit quantities, and VAT split were
+                      not present in the legacy export. Preserved legacy value:{' '}
+                      <strong className="font-mono-nums">
+                        {formatMoney(job.legacyValueUSD ?? 0, 'USD')}
+                      </strong>
+                      . Issuing a tax invoice is blocked until specifications are
+                      confirmed.
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
                     <div className="border border-slate-200 rounded-md p-3">
-                      <div className="text-[11px] text-slate-500">Quoted Net</div>
+                      <div className="text-[11px] text-slate-500">
+                        {isLegacyUnextracted ? 'Legacy Value' : 'Quoted Net'}
+                      </div>
                       <div className="font-mono-nums text-sm font-semibold text-slate-900 mt-0.5">
-                        {formatMoney(job.netTotal, settings.currency)}
+                        {isLegacyUnextracted
+                          ? formatMoney(job.legacyValueUSD ?? 0, 'USD')
+                          : formatMoney(job.netTotal, settings.currency)}
                       </div>
                     </div>
                     <div className="border border-slate-200 rounded-md p-3">
@@ -492,30 +520,52 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                     </div>
                     <div className="border border-slate-200 rounded-md p-3">
                       <div className="text-[11px] text-slate-500">Gross Margin</div>
-                      <div
-                        className={`font-mono-nums text-sm font-semibold mt-0.5 ${
-                          costing.grossMarginPct < 15
-                            ? 'text-red-700'
-                            : 'text-emerald-700'
-                        }`}
-                      >
-                        {costing.grossMarginPct.toFixed(1)}%
-                      </div>
+                      {isLegacyUnextracted ? (
+                        <div className="font-mono-nums text-sm font-semibold text-slate-400 mt-0.5">
+                          —
+                        </div>
+                      ) : (
+                        <div
+                          className={`font-mono-nums text-sm font-semibold mt-0.5 ${
+                            costing.grossMarginPct < 15
+                              ? 'text-red-700'
+                              : 'text-emerald-700'
+                          }`}
+                        >
+                          {costing.grossMarginPct.toFixed(1)}%
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="border border-slate-200 rounded-md px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 bg-slate-50">
-                    <span>
-                      VAT ({job.vatTreatment === 'standard' ? `${job.vatRate}%` : job.vatTreatment}):{' '}
-                      <strong className="font-mono-nums text-slate-900">
-                        {formatMoney(job.vatAmount, settings.currency)}
-                      </strong>
-                    </span>
-                    <span>
-                      Gross Invoice Value:{' '}
-                      <strong className="font-mono-nums text-slate-900">
-                        {formatMoney(job.grossTotal, settings.currency)}
-                      </strong>
-                    </span>
+                    {isLegacyUnextracted ? (
+                      <>
+                        <span className="text-amber-800 font-medium">
+                          VAT: Tax Split Unknown (Specs Missing)
+                        </span>
+                        <span>
+                          Legacy Reference Value:{' '}
+                          <strong className="font-mono-nums text-slate-900">
+                            {formatMoney(job.legacyValueUSD ?? 0, 'USD')}
+                          </strong>
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span>
+                          VAT ({job.vatTreatment === 'standard' ? `${job.vatRate}%` : job.vatTreatment}):{' '}
+                          <strong className="font-mono-nums text-slate-900">
+                            {formatMoney(job.vatAmount, settings.currency)}
+                          </strong>
+                        </span>
+                        <span>
+                          Gross Invoice Value:{' '}
+                          <strong className="font-mono-nums text-slate-900">
+                            {formatMoney(job.grossTotal, settings.currency)}
+                          </strong>
+                        </span>
+                      </>
+                    )}
                   </div>
 
                   {/* Sales Rep & Commission Trace */}

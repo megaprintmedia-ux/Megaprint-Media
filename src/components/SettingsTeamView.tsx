@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Check,
   Copy,
+  DatabaseBackup,
   Landmark,
   Pencil,
   Plus,
@@ -87,6 +88,7 @@ interface SettingsTeamViewProps {
     status: UserInviteStatus
   ) => Promise<void>;
   onDeleteUserInvite: (inviteId: string) => Promise<void>;
+  onOpenLegacyImport?: () => void;
 }
 
 type SettingsTab = 'company' | 'coa' | 'commissions' | 'team';
@@ -131,6 +133,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
   onCreateUserInvite,
   onUpdateUserInviteStatus,
   onDeleteUserInvite,
+  onOpenLegacyImport,
 }) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>('company');
 
@@ -565,13 +568,25 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
           </button>
         </div>
 
-        <div className="text-xs text-slate-500 font-mono-nums">
-          {settings.currency} · ZIMRA VAT {settings.defaultVatRate}% · Comm{' '}
-          {settings.defaultCommissionRatePct ?? 5}% (
-          {(settings.defaultCommissionBasis || 'gross_profit') === 'gross_profit'
-            ? 'Job Net Profit'
-            : 'Net Sales'}
-          )
+        <div className="flex items-center gap-3">
+          <div className="text-xs text-slate-500 font-mono-nums">
+            {settings.currency} · ZIMRA VAT {settings.defaultVatRate}% · Comm{' '}
+            {settings.defaultCommissionRatePct ?? 5}% (
+            {(settings.defaultCommissionBasis || 'gross_profit') === 'gross_profit'
+              ? 'Job Net Profit'
+              : 'Net Sales'}
+            )
+          </div>
+          {onOpenLegacyImport && (
+            <button
+              type="button"
+              onClick={onOpenLegacyImport}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-800 hover:bg-slate-100 whitespace-nowrap"
+            >
+              <DatabaseBackup className="h-3.5 w-3.5 text-blue-600" />
+              <span>Legacy Data Import</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -886,9 +901,20 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                           {acc.code}
                         </td>
                         <td className="py-3 px-4">
-                          <div className="font-semibold text-slate-900">{acc.name}</div>
+                          <div className="font-semibold text-slate-900 flex flex-wrap items-center gap-1.5">
+                            <span>{acc.name}</span>
+                            {acc.legacyImported && (
+                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 font-mono-nums">
+                                Legacy {acc.legacySourceCode || ''}
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[11px] text-slate-500 mt-0.5">
                             {acc.accountType} · {acc.subType} · {acc.currency}
+                            {acc.legacyCurrencyLabel &&
+                            acc.legacyCurrencyLabel !== acc.currency
+                              ? ` (Src: ${acc.legacyCurrencyLabel})`
+                              : ''}
                           </div>
                         </td>
                         <td className="py-3 px-4">
@@ -921,7 +947,24 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                           </span>
                         </td>
                         <td className="py-3 px-4 text-right font-mono-nums font-semibold text-slate-900 whitespace-nowrap">
-                          {formatMoney(acc.openingBalance || 0, acc.currency || settings.currency)}
+                          <div>
+                            {formatMoney(
+                              acc.openingBalance || 0,
+                              acc.currency || settings.currency
+                            )}
+                          </div>
+                          {typeof acc.legacyNormalBalanceUSD === 'number' && (
+                            <div
+                              className={`text-[10px] font-normal mt-0.5 ${
+                                acc.legacyNormalBalanceUSD < 0
+                                  ? 'text-amber-700'
+                                  : 'text-slate-500'
+                              }`}
+                            >
+                              Legacy Ref:{' '}
+                              {formatMoney(acc.legacyNormalBalanceUSD, 'USD')}
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 px-4">
                           <button

@@ -6,6 +6,7 @@ import {
   CompanySettings,
   Invoice,
   Job,
+  OpeningBalanceRecord,
 } from '../types/erp';
 import { formatMoney, round2 } from '../utils/vat';
 import { BrandLogo } from './BrandLogo';
@@ -16,6 +17,7 @@ interface ClientsViewProps {
   jobs: Job[];
   invoices: Invoice[];
   cashBookEntries: CashBookEntry[];
+  openingBalances?: OpeningBalanceRecord[];
   onCreateClient: (
     input: Omit<Client, 'id' | 'ownerUid' | 'staffUids' | 'createdAt' | 'updatedAt'>
   ) => Promise<string | undefined>;
@@ -42,6 +44,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
   jobs,
   invoices,
   cashBookEntries,
+  openingBalances = [],
   onCreateClient,
   onUpdateClient,
 }) => {
@@ -119,11 +122,16 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyName.trim() || !contactName.trim()) return;
+    if (!companyName.trim()) return;
     setSaving(true);
     try {
       const cleanTin = zimraTin.trim().toUpperCase();
       const cleanVatReg = vatRegNumber.trim().toUpperCase();
+      const parsedTerms =
+        paymentTermsDays.trim() === '' ? 30 : Number(paymentTermsDays);
+      const normalizedTerms = Number.isFinite(parsedTerms)
+        ? Math.max(0, Math.min(365, Math.round(parsedTerms)))
+        : 30;
       const payload = {
         companyName: companyName.trim(),
         contactName: contactName.trim(),
@@ -134,7 +142,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
         vatRegNumber: cleanVatReg,
         isVatRegistered: isVatRegistered || Boolean(cleanVatReg),
         address: address.trim(),
-        paymentTermsDays: Number(paymentTermsDays) || 30,
+        paymentTermsDays: normalizedTerms,
         notes: notes.trim(),
       };
       if (editing) {
@@ -415,6 +423,28 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                       (acc, i) => acc + (i.balanceDue || 0),
                       0
                     );
+                    const openingReceivables = round2(
+                      openingBalances
+                        .filter(
+                          (ob) =>
+                            ob.recordType === 'receivable' &&
+                            (ob.counterpartyId === client.id ||
+                              (client.legacySourceId &&
+                                ob.counterpartySourceId === client.legacySourceId))
+                        )
+                        .reduce((acc, ob) => acc + (ob.outstandingUSD || 0), 0)
+                    );
+                    const openingCredits = round2(
+                      openingBalances
+                        .filter(
+                          (ob) =>
+                            ob.recordType === 'customer_credit' &&
+                            (ob.counterpartyId === client.id ||
+                              (client.legacySourceId &&
+                                ob.counterpartySourceId === client.legacySourceId))
+                        )
+                        .reduce((acc, ob) => acc + (ob.outstandingUSD || 0), 0)
+                    );
                     const displayTin = client.zimraTin || client.taxPin;
                     return (
                       <tr key={client.id} className="hover:bg-slate-50">
@@ -423,7 +453,10 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                             {client.companyName}
                           </div>
                           <div className="text-xs text-slate-500">
-                            {client.contactName}
+                            {client.contactName || 'Contact not recorded'}
+                            {client.creditApproved && (client.creditLimitUSD ?? 0) > 0
+                              ? ` · Limit ${formatMoney(client.creditLimitUSD || 0, 'USD')}`
+                              : ''}
                           </div>
                         </td>
                         <td className="py-3 px-4 text-xs text-slate-600">
@@ -458,7 +491,17 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                             balanceDue > 0.01 ? 'text-amber-700' : 'text-emerald-700'
                           }`}
                         >
-                          {formatMoney(balanceDue, settings.currency)}
+                          <div>{formatMoney(balanceDue, settings.currency)}</div>
+                          {openingReceivables > 0 && (
+                            <div className="text-[10px] font-normal text-slate-500">
+                              Opening AR: {formatMoney(openingReceivables, 'USD')}
+                            </div>
+                          )}
+                          {openingCredits > 0 && (
+                            <div className="text-[10px] font-normal text-emerald-700">
+                              Credit: -{formatMoney(openingCredits, 'USD')}
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 px-4 text-right whitespace-nowrap">
                           <div className="inline-flex items-center gap-1.5">
@@ -522,13 +565,13 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Primary Contact Person
+                    Primary Contact Person (Optional)
                   </label>
                   <input
                     type="text"
-                    required
                     value={contactName}
                     onChange={(e) => setContactName(e.target.value)}
+                    placeholder="Optional (leave blank if unrecorded)"
                     className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
                   />
                 </div>
@@ -809,7 +852,7 @@ export const ClientsView: React.FC<ClientsViewProps> = ({
                     {statementClient.companyName}
                   </div>
                   <div className="text-slate-600">
-                    Attn: {statementClient.contactName}
+                    Attn: {statementClient.contactName || 'Accounts Payable'}
                   </div>
                   {statementClient.address && (
                     <div className="text-slate-600">{statementClient.address}</div>

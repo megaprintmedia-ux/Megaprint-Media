@@ -2,7 +2,9 @@ import { InvoiceLine, Job, PricingMode, VatTreatment } from '../types/erp';
 
 export function round2(value: number): number {
   if (!Number.isFinite(value)) return 0;
-  return Math.round((value + Number.EPSILON) * 100) / 100;
+  const sign = value < 0 ? -1 : 1;
+  const rounded = (sign * Math.round((Math.abs(value) + Number.EPSILON) * 100)) / 100;
+  return rounded === 0 ? 0 : rounded;
 }
 
 export interface VatBreakdown {

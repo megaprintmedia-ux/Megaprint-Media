@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Building2,
   CreditCard,
   Download,
   FileText,
@@ -15,7 +16,9 @@ import {
   DEFAULT_ZIM_CASH_ACCOUNTS,
   InvoiceLine,
   Job,
+  OpeningBalanceRecord,
   PricingMode,
+  Supplier,
   SupplierInvoice,
   SupplierInvoiceCategory,
   SupplierInvoiceStatus,
@@ -39,7 +42,12 @@ interface SupplierInvoicesViewProps {
   settings: CompanySettings;
   chartOfAccounts: ChartAccount[];
   supplierInvoices: SupplierInvoice[];
+  suppliers?: Supplier[];
+  openingBalances?: OpeningBalanceRecord[];
   jobs: Job[];
+  onCreateSupplier?: (
+    input: Omit<Supplier, 'id' | 'ownerUid' | 'staffUids' | 'createdAt' | 'updatedAt'>
+  ) => Promise<string | undefined>;
   onCreateSupplierInvoice: (
     input: Omit<
       SupplierInvoice,
@@ -145,7 +153,10 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
   settings,
   chartOfAccounts,
   supplierInvoices,
+  suppliers = [],
+  openingBalances = [],
   jobs,
+  onCreateSupplier,
   onCreateSupplierInvoice,
   onUpdateSupplierInvoice,
   onRecordSupplierPayment,
@@ -163,8 +174,23 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
     return active.length > 0 ? active : [...DEFAULT_ZIM_CASH_ACCOUNTS];
   }, [chartOfAccounts]);
 
+  const [activeSubTab, setActiveSubTab] = useState<'invoices' | 'directory' | 'opening'>(
+    'invoices'
+  );
   const [statusFilter, setStatusFilter] = useState<'All' | SupplierInvoiceStatus>('All');
   const [searchQuery, setSearchQuery] = useState('');
+  const [supplierSearch, setSupplierSearch] = useState('');
+  const [showCreateSupplier, setShowCreateSupplier] = useState(false);
+  const [newSupName, setNewSupName] = useState('');
+  const [newSupContact, setNewSupContact] = useState('');
+  const [newSupPhone, setNewSupPhone] = useState('');
+  const [newSupEmail, setNewSupEmail] = useState('');
+  const [newSupAddress, setNewSupAddress] = useState('');
+  const [newSupTin, setNewSupTin] = useState('');
+  const [newSupVatReg, setNewSupVatReg] = useState('');
+  const [newSupVatRegistered, setNewSupVatRegistered] = useState(false);
+  const [newSupNotes, setNewSupNotes] = useState('');
+  const [savingSupplier, setSavingSupplier] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<SupplierInvoice | null>(null);
   const [paymentModalInv, setPaymentModalInv] = useState<SupplierInvoice | null>(null);
@@ -465,6 +491,64 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
     });
   }, [supplierInvoices, statusFilter, searchQuery]);
 
+  const filteredSuppliers = useMemo(() => {
+    const q = supplierSearch.trim().toLowerCase();
+    if (!q) return suppliers;
+    return suppliers.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        (s.contactName || '').toLowerCase().includes(q) ||
+        (s.email || '').toLowerCase().includes(q) ||
+        (s.phone || '').toLowerCase().includes(q) ||
+        (s.zimraTin || '').toLowerCase().includes(q) ||
+        (s.vatRegNumber || '').toLowerCase().includes(q) ||
+        (s.legacySourceKey || '').toLowerCase().includes(q)
+    );
+  }, [suppliers, supplierSearch]);
+
+  const openingPayables = useMemo(
+    () =>
+      openingBalances.filter(
+        (b) =>
+          b.recordType === 'supplier_payable_invoice' ||
+          b.recordType === 'supplier_opening_accrual'
+      ),
+    [openingBalances]
+  );
+
+  const effectiveSubTab = isVatOnly ? 'invoices' : activeSubTab;
+
+  const handleSaveMasterSupplier = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onCreateSupplier || !newSupName.trim()) return;
+    setSavingSupplier(true);
+    try {
+      await onCreateSupplier({
+        name: newSupName.trim(),
+        contactName: newSupContact.trim(),
+        phone: newSupPhone.trim(),
+        email: newSupEmail.trim(),
+        address: newSupAddress.trim(),
+        zimraTin: newSupTin.trim().toUpperCase(),
+        vatRegNumber: newSupVatReg.trim().toUpperCase(),
+        isVatRegistered: newSupVatRegistered || Boolean(newSupVatReg.trim()),
+        notes: newSupNotes.trim(),
+      });
+      setNewSupName('');
+      setNewSupContact('');
+      setNewSupPhone('');
+      setNewSupEmail('');
+      setNewSupAddress('');
+      setNewSupTin('');
+      setNewSupVatReg('');
+      setNewSupVatRegistered(false);
+      setNewSupNotes('');
+      setShowCreateSupplier(false);
+    } finally {
+      setSavingSupplier(false);
+    }
+  };
+
   const resetForm = () => {
     setSupplierName('');
     setSupplierTin('');
@@ -714,6 +798,221 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
         </div>
       </div>
 
+      {!isVatOnly && (
+        <div className="bg-white border border-slate-200 rounded-lg p-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-md overflow-x-auto">
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('invoices')}
+              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap ${
+                effectiveSubTab === 'invoices'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Supplier Tax Invoices ({supplierInvoices.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('directory')}
+              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap ${
+                effectiveSubTab === 'directory'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Master Suppliers ({suppliers.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('opening')}
+              className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap ${
+                effectiveSubTab === 'opening'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Opening Payables &amp; Accruals ({openingPayables.length})
+            </button>
+          </div>
+          {effectiveSubTab === 'directory' && onCreateSupplier && (
+            <button
+              type="button"
+              onClick={() => setShowCreateSupplier(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 whitespace-nowrap"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>Add Master Supplier</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {effectiveSubTab === 'directory' && !isVatOnly ? (
+        <div className="space-y-4">
+          <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="relative">
+              <Search className="h-3.5 w-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={supplierSearch}
+                onChange={(e) => setSupplierSearch(e.target.value)}
+                placeholder="Search master suppliers, TIN, phone..."
+                className="pl-8 pr-3 py-1.5 border border-slate-200 rounded-md text-xs text-slate-900 w-72"
+              />
+            </div>
+            <span className="text-xs text-slate-500">
+              Master supplier contacts only (no synthetic invoices created).
+            </span>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            {filteredSuppliers.length === 0 ? (
+              <div className="p-10 text-center text-sm text-slate-500">
+                No master suppliers registered yet. Add a supplier or import via Legacy Data Import.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-500">
+                      <th className="py-2.5 px-4">Supplier Name</th>
+                      <th className="py-2.5 px-4">Contact &amp; Phone</th>
+                      <th className="py-2.5 px-4">Email &amp; Address</th>
+                      <th className="py-2.5 px-4">ZIMRA TIN / VAT #</th>
+                      <th className="py-2.5 px-4">Source / Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredSuppliers.map((sup) => (
+                      <tr key={sup.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4 font-semibold text-slate-900">
+                          <div className="flex items-center gap-1.5">
+                            <Building2 className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                            <span>{sup.name}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-slate-600">
+                          <div>{sup.contactName || '—'}</div>
+                          <div className="font-mono-nums text-[11px] text-slate-500">
+                            {sup.phone || '—'}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-slate-600">
+                          <div>{sup.email || '—'}</div>
+                          <div className="text-[11px] text-slate-500 max-w-xs truncate">
+                            {sup.address || '—'}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 font-mono-nums text-slate-700">
+                          <div>{sup.zimraTin ? `TIN ${sup.zimraTin}` : '—'}</div>
+                          {sup.vatRegNumber && (
+                            <div className="text-[11px] text-slate-500">
+                              VAT {sup.vatRegNumber}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-slate-500">
+                          {sup.legacySourceKey && (
+                            <div className="font-mono-nums text-[11px] text-blue-700">
+                              Legacy: {sup.legacySourceKey}
+                            </div>
+                          )}
+                          <div className="max-w-xs truncate">{sup.notes || '—'}</div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : effectiveSubTab === 'opening' && !isVatOnly ? (
+        <div className="space-y-4">
+          <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900">
+            <strong>Historical Opening Payables &amp; Accruals:</strong> Imported pre-cutover
+            supplier payables and accruals are retained here for audit reconciliation and are
+            excluded from Input VAT claims.
+          </div>
+          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            {openingPayables.length === 0 ? (
+              <div className="p-10 text-center text-sm text-slate-500">
+                No historical opening supplier payables or accruals imported.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-500">
+                      <th className="py-2.5 px-4">Reference</th>
+                      <th className="py-2.5 px-4">Supplier</th>
+                      <th className="py-2.5 px-4">Classification</th>
+                      <th className="py-2.5 px-4">Dates</th>
+                      <th className="py-2.5 px-4 text-right">Outstanding USD</th>
+                      <th className="py-2.5 px-4">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {openingPayables.map((ob) => (
+                      <tr key={ob.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4 font-mono-nums font-semibold text-slate-900">
+                          <div>{ob.sourceReference || 'Opening Accrual'}</div>
+                          {ob.matchedSupplierInvoiceNo && (
+                            <div className="text-[11px] text-emerald-700">
+                              Matched: {ob.matchedSupplierInvoiceNo}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 font-medium text-slate-800">
+                          {ob.counterpartyName}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`inline-block px-2 py-0.5 rounded text-[11px] font-semibold ${
+                              ob.isMatchedExisting
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : ob.recordType === 'supplier_opening_accrual'
+                                  ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                  : 'bg-blue-50 text-blue-700 border border-blue-200'
+                            }`}
+                          >
+                            {ob.isMatchedExisting
+                              ? 'Matched Existing Bill'
+                              : ob.recordType === 'supplier_opening_accrual'
+                                ? 'Opening Accrual'
+                                : 'Opening Payable'}
+                          </span>
+                          {ob.preservedMetadata?.kind && (
+                            <span className="ml-1.5 text-[11px] text-slate-500">
+                              ({ob.preservedMetadata.kind})
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 font-mono-nums text-slate-600">
+                          <div>As of {ob.asOfDate}</div>
+                          {ob.dueDate && (
+                            <div className="text-[11px] text-slate-500">
+                              Due {ob.dueDate}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono-nums font-semibold text-slate-900">
+                          {formatMoney(ob.outstandingUSD, 'USD')}
+                        </td>
+                        <td className="py-3 px-4 text-slate-500 max-w-xs truncate">
+                          {ob.notes || '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <>
       {/* Toolbar */}
       <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
@@ -932,6 +1231,143 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
           </div>
         )}
       </div>
+        </>
+      )}
+
+      {/* Create Master Supplier Modal */}
+      {showCreateSupplier && !isVatOnly && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-lg w-full max-w-lg overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <h2 className="font-display text-base font-bold text-slate-900">
+                Add Master Supplier Contact
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowCreateSupplier(false)}
+                className="p-1 text-slate-500 hover:text-slate-900"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveMasterSupplier} className="p-6 space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Supplier Legal Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newSupName}
+                    onChange={(e) => setNewSupName(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Contact Person
+                  </label>
+                  <input
+                    type="text"
+                    value={newSupContact}
+                    onChange={(e) => setNewSupContact(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Phone</label>
+                  <input
+                    type="text"
+                    value={newSupPhone}
+                    onChange={(e) => setNewSupPhone(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Email</label>
+                  <input
+                    type="email"
+                    value={newSupEmail}
+                    onChange={(e) => setNewSupEmail(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    ZIMRA TIN
+                  </label>
+                  <input
+                    type="text"
+                    value={newSupTin}
+                    onChange={(e) => setNewSupTin(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    VAT Reg #
+                  </label>
+                  <input
+                    type="text"
+                    value={newSupVatReg}
+                    onChange={(e) => {
+                      setNewSupVatReg(e.target.value);
+                      if (e.target.value.trim()) setNewSupVatRegistered(true);
+                    }}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums uppercase"
+                  />
+                </div>
+                <div className="flex items-center pt-5">
+                  <label className="inline-flex items-center gap-2 font-medium text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newSupVatRegistered}
+                      onChange={(e) => setNewSupVatRegistered(e.target.checked)}
+                      className="rounded border-slate-300 text-blue-600"
+                    />
+                    <span>VAT Registered</span>
+                  </label>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block font-medium text-slate-700 mb-1">Address</label>
+                  <input
+                    type="text"
+                    value={newSupAddress}
+                    onChange={(e) => setNewSupAddress(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block font-medium text-slate-700 mb-1">Notes</label>
+                  <input
+                    type="text"
+                    value={newSupNotes}
+                    onChange={(e) => setNewSupNotes(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateSupplier(false)}
+                  className="px-4 py-2 rounded-md border border-slate-200 font-semibold text-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingSupplier}
+                  className="px-4 py-2 rounded-md bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {savingSupplier ? 'Saving...' : 'Save Master Supplier'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Create Supplier Tax Invoice Modal */}
       {showCreate && (
@@ -957,6 +1393,37 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
 
             <form onSubmit={handleCreateSubmit} className="overflow-y-auto p-6 space-y-5">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {suppliers.length > 0 && (
+                  <div className="sm:col-span-3">
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      Select Registered Supplier (Optional Autofill)
+                    </label>
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const sup = suppliers.find((s) => s.id === e.target.value);
+                        if (!sup) return;
+                        setSupplierName(sup.name);
+                        setSupplierTin(sup.zimraTin || '');
+                        setSupplierVatReg(sup.vatRegNumber || '');
+                        setIsVatRegistered(
+                          Boolean(sup.isVatRegistered || sup.vatRegNumber)
+                        );
+                      }}
+                      className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-slate-50"
+                    >
+                      <option value="">
+                        Choose from Master Suppliers ({suppliers.length}) or type manually below...
+                      </option>
+                      {suppliers.map((sup) => (
+                        <option key={sup.id} value={sup.id}>
+                          {sup.name}
+                          {sup.zimraTin ? ` · TIN ${sup.zimraTin}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-medium text-slate-700 mb-1">
                     Supplier / Vendor Name

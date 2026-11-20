@@ -6,6 +6,7 @@ import {
   ExpenseCategory,
   Invoice,
   Job,
+  OpeningBalanceRecord,
   PricingMode,
   SupplierInvoice,
   TaxAccessScope,
@@ -29,6 +30,7 @@ interface AccountingViewProps {
   invoices: Invoice[];
   expenses: Expense[];
   supplierInvoices: SupplierInvoice[];
+  openingBalances?: OpeningBalanceRecord[];
   jobs: Job[];
   onCreateExpense: (
     input: Omit<Expense, 'id' | 'ownerUid' | 'staffUids' | 'createdAt' | 'updatedAt'>
@@ -85,6 +87,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   invoices,
   expenses,
   supplierInvoices,
+  openingBalances = [],
   jobs,
   onCreateExpense,
   onUpdateExpense,
@@ -264,6 +267,27 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
       validInvoices.reduce((a, i) => a + (i.whtWithheldAmount || 0), 0)
     );
 
+    const openingReceivables = round2(
+      openingBalances
+        .filter((b) => b.recordType === 'receivable')
+        .reduce((a, b) => a + (b.outstandingUSD || 0), 0)
+    );
+    const openingCredits = round2(
+      openingBalances
+        .filter((b) => b.recordType === 'customer_credit')
+        .reduce((a, b) => a + (b.outstandingUSD || 0), 0)
+    );
+    const openingPayablesUnmatched = round2(
+      openingBalances
+        .filter(
+          (b) =>
+            (b.recordType === 'supplier_payable_invoice' ||
+              b.recordType === 'supplier_opening_accrual') &&
+            !b.isMatchedExisting
+        )
+        .reduce((a, b) => a + (b.outstandingUSD || 0), 0)
+    );
+
     return {
       validInvoices,
       salesNet,
@@ -289,8 +313,11 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
       supplierWhtRemitted,
       supplierWhtPending,
       clientWhtCertificates,
+      openingReceivables,
+      openingCredits,
+      openingPayablesUnmatched,
     };
-  }, [invoices, expenses, supplierInvoices]);
+  }, [invoices, expenses, supplierInvoices, openingBalances]);
 
   const handleSaveExpense = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -793,76 +820,124 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
 
       {/* Profit & Loss Statement Tab */}
       {effectiveTab === 'pnl' && !isVatOnly && (
-        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden max-w-3xl">
-          <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
-            <h2 className="font-display text-sm font-bold text-slate-900">
-              Statement of Profit &amp; Loss (Excl. VAT)
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Accrual basis across issued tax invoices and recorded supplier expenses
-            </p>
-          </div>
-          <div className="p-6 divide-y divide-slate-100 text-sm">
-            <div className="py-3 flex justify-between">
-              <span className="font-medium text-slate-900">
-                Revenue (Net Invoiced Sales, Excl. VAT)
-              </span>
-              <span className="font-mono-nums font-semibold text-slate-900">
-                {formatMoney(ledger.salesNet, settings.currency)}
-              </span>
+        <div className="space-y-5 max-w-3xl">
+          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
+              <h2 className="font-display text-sm font-bold text-slate-900">
+                Statement of Profit &amp; Loss (Excl. VAT)
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Accrual basis across issued tax invoices and recorded supplier expenses
+              </p>
             </div>
-            <div className="py-3 flex justify-between text-slate-600">
-              <span>Less: Direct Production Materials &amp; Tailoring COGS</span>
-              <span className="font-mono-nums">
-                ({formatMoney(ledger.cogsNet, settings.currency)})
-              </span>
-            </div>
-            <div className="py-3 flex justify-between font-semibold bg-slate-50/70 px-2 rounded">
-              <span className="text-slate-900">Gross Profit</span>
-              <span className="font-mono-nums text-slate-900">
-                {formatMoney(ledger.grossProfit, settings.currency)}
-              </span>
-            </div>
+            <div className="p-6 divide-y divide-slate-100 text-sm">
+              <div className="py-3 flex justify-between">
+                <span className="font-medium text-slate-900">
+                  Revenue (Net Invoiced Sales, Excl. VAT)
+                </span>
+                <span className="font-mono-nums font-semibold text-slate-900">
+                  {formatMoney(ledger.salesNet, settings.currency)}
+                </span>
+              </div>
+              <div className="py-3 flex justify-between text-slate-600">
+                <span>Less: Direct Production Materials &amp; Tailoring COGS</span>
+                <span className="font-mono-nums">
+                  ({formatMoney(ledger.cogsNet, settings.currency)})
+                </span>
+              </div>
+              <div className="py-3 flex justify-between font-semibold bg-slate-50/70 px-2 rounded">
+                <span className="text-slate-900">Gross Profit</span>
+                <span className="font-mono-nums text-slate-900">
+                  {formatMoney(ledger.grossProfit, settings.currency)}
+                </span>
+              </div>
 
-            {EXPENSE_CATEGORIES.filter(
-              (c) => c !== 'Materials & Substrates' && c !== 'Tailoring & Trims'
-            ).map((cat) => {
-              const catSum = round2(
-                expenses
-                  .filter((e) => e.category === cat)
-                  .reduce((a, e) => a + e.netAmount, 0) +
-                  supplierInvoices
-                    .filter((s) => s.category === cat)
-                    .reduce((a, s) => a + s.netAmount, 0)
-              );
-              if (catSum === 0) return null;
-              return (
-                <div key={cat} className="py-2.5 flex justify-between text-slate-600">
-                  <span>{cat}</span>
-                  <span className="font-mono-nums">
-                    ({formatMoney(catSum, settings.currency)})
+              {EXPENSE_CATEGORIES.filter(
+                (c) => c !== 'Materials & Substrates' && c !== 'Tailoring & Trims'
+              ).map((cat) => {
+                const catSum = round2(
+                  expenses
+                    .filter((e) => e.category === cat)
+                    .reduce((a, e) => a + e.netAmount, 0) +
+                    supplierInvoices
+                      .filter((s) => s.category === cat)
+                      .reduce((a, s) => a + s.netAmount, 0)
+                );
+                if (catSum === 0) return null;
+                return (
+                  <div key={cat} className="py-2.5 flex justify-between text-slate-600">
+                    <span>{cat}</span>
+                    <span className="font-mono-nums">
+                      ({formatMoney(catSum, settings.currency)})
+                    </span>
+                  </div>
+                );
+              })}
+
+              <div className="py-4 flex justify-between font-bold text-base">
+                <span className="text-slate-900">Net Operating Profit / (Loss)</span>
+                <span
+                  className={`font-mono-nums ${
+                    ledger.netOperatingProfit >= 0 ? 'text-emerald-700' : 'text-red-700'
+                  }`}
+                >
+                  {formatMoney(ledger.netOperatingProfit, settings.currency)}
+                </span>
+              </div>
+              <div className="pt-3 flex justify-between text-xs text-slate-500">
+                <span>Total Settled on Customer Invoices (Cash + WHT)</span>
+                <span className="font-mono-nums font-medium text-slate-700">
+                  {formatMoney(ledger.cashCollected, settings.currency)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {openingBalances.length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+              <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
+                <h3 className="font-display text-sm font-bold text-slate-900">
+                  Imported Pre-Cutover Opening Balances (Audit Reference)
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Balance-sheet cutover items separated from current-period VAT Return &amp; P&amp;L.
+                </p>
+              </div>
+              <div className="p-6 divide-y divide-slate-100 text-xs">
+                <div className="py-2.5 flex justify-between">
+                  <span className="text-slate-700">Opening Trade Receivables (Gross AR)</span>
+                  <span className="font-mono-nums font-semibold text-slate-900">
+                    {formatMoney(ledger.openingReceivables, 'USD')}
                   </span>
                 </div>
-              );
-            })}
-
-            <div className="py-4 flex justify-between font-bold text-base">
-              <span className="text-slate-900">Net Operating Profit / (Loss)</span>
-              <span
-                className={`font-mono-nums ${
-                  ledger.netOperatingProfit >= 0 ? 'text-emerald-700' : 'text-red-700'
-                }`}
-              >
-                {formatMoney(ledger.netOperatingProfit, settings.currency)}
-              </span>
+                <div className="py-2.5 flex justify-between">
+                  <span className="text-slate-700">
+                    Unapplied Customer Credits (Tracked Separately)
+                  </span>
+                  <span className="font-mono-nums font-semibold text-emerald-700">
+                    {formatMoney(ledger.openingCredits, 'USD')}
+                  </span>
+                </div>
+                <div className="py-2.5 flex justify-between">
+                  <span className="text-slate-700">Net Opening Customer Receivables</span>
+                  <span className="font-mono-nums font-semibold text-slate-900">
+                    {formatMoney(
+                      round2(ledger.openingReceivables - ledger.openingCredits),
+                      'USD'
+                    )}
+                  </span>
+                </div>
+                <div className="py-2.5 flex justify-between">
+                  <span className="text-slate-700">
+                    Imported Opening Supplier Payables &amp; Accruals (Excl. Matched Bills)
+                  </span>
+                  <span className="font-mono-nums font-semibold text-amber-700">
+                    {formatMoney(ledger.openingPayablesUnmatched, 'USD')}
+                  </span>
+                </div>
+              </div>
             </div>
-            <div className="pt-3 flex justify-between text-xs text-slate-500">
-              <span>Total Settled on Customer Invoices (Cash + WHT)</span>
-              <span className="font-mono-nums font-medium text-slate-700">
-                {formatMoney(ledger.cashCollected, settings.currency)}
-              </span>
-            </div>
-          </div>
+          )}
         </div>
       )}
 

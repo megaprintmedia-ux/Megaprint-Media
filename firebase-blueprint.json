@@ -48,7 +48,7 @@
       "type": "object",
       "properties": {
         "companyName": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "contactName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "contactName": { "type": "string", "maxLength": 120 },
         "email": { "type": "string", "maxLength": 200 },
         "phone": { "type": "string", "maxLength": 40 },
         "taxPin": { "type": "string", "maxLength": 64 },
@@ -58,12 +58,17 @@
         "address": { "type": "string", "maxLength": 300 },
         "paymentTermsDays": { "type": "number" },
         "notes": { "type": "string", "maxLength": 1000 },
+        "legacySourceId": { "type": "string", "maxLength": 128 },
+        "legacyPricingMode": { "type": "string", "maxLength": 64 },
+        "creditApproved": { "type": "boolean" },
+        "creditLimitUSD": { "type": "number" },
+        "importRunId": { "type": "string", "maxLength": 128 },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "staffUids": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["companyName", "contactName", "paymentTermsDays", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+      "required": ["companyName", "paymentTermsDays", "ownerUid", "staffUids", "createdAt", "updatedAt"]
     },
     "Job": {
       "title": "Production Job",
@@ -87,7 +92,7 @@
         "tailoringMeasurements": { "type": "string", "maxLength": 2000 },
         "checklist": { "type": "object" },
         "pricingMode": { "type": "string", "enum": ["exclusive", "inclusive"] },
-        "vatTreatment": { "type": "string", "enum": ["standard", "zero", "exempt"] },
+        "vatTreatment": { "type": "string", "enum": ["standard", "zero", "exempt", "unknown"] },
         "vatRate": { "type": "number" },
         "unitPrice": { "type": "number" },
         "netTotal": { "type": "number" },
@@ -106,6 +111,14 @@
         "commissionAmount": { "type": "number" },
         "commissionStatus": { "type": "string", "enum": ["Pending", "Earned", "Approved", "Paid"] },
         "commissionPaidDate": { "type": "string", "maxLength": 32 },
+        "legacySourceReference": { "type": "string", "maxLength": 120 },
+        "legacySourceStatus": { "type": "string", "maxLength": 80 },
+        "legacyDivision": { "type": "string", "maxLength": 120 },
+        "legacyPreparedBy": { "type": "string", "maxLength": 120 },
+        "legacySalesOwner": { "type": "string", "maxLength": 120 },
+        "legacyValueUSD": { "type": "number" },
+        "legacyLinesExtracted": { "type": "boolean" },
+        "importRunId": { "type": "string", "maxLength": 128 },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "staffUids": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -478,6 +491,14 @@
         "isCashBookAccount": { "type": "boolean" },
         "isActive": { "type": "boolean" },
         "notes": { "type": "string", "maxLength": 500 },
+        "legacySourceCode": { "type": "string", "maxLength": 40 },
+        "legacyParentCode": { "type": "string", "maxLength": 40 },
+        "legacyCurrencyLabel": { "type": "string", "maxLength": 40 },
+        "legacyNormalBalanceUSD": { "type": "number" },
+        "legacyTrialDebitUSD": { "type": "number" },
+        "legacyTrialCreditUSD": { "type": "number" },
+        "legacyImported": { "type": "boolean" },
+        "importRunId": { "type": "string", "maxLength": 128 },
         "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "staffUids": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -536,6 +557,135 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["requisitionNumber", "requisitionDate", "requisitionType", "department", "priority", "requestedByUid", "requestedByName", "lines", "totalEstimatedCost", "status", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Master supplier/vendor contact register",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "contactName": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "email": { "type": "string", "maxLength": 200 },
+        "address": { "type": "string", "maxLength": 300 },
+        "zimraTin": { "type": "string", "maxLength": 64 },
+        "vatRegNumber": { "type": "string", "maxLength": 64 },
+        "isVatRegistered": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "legacySourceKey": { "type": "string", "maxLength": 128 },
+        "importRunId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "ownerUid", "staffUids", "createdAt", "updatedAt"]
+    },
+    "OpeningBalanceRecord": {
+      "title": "Historical Opening Balance Record",
+      "description": "Historical opening receivables, unapplied customer credits, supplier payable invoices, and opening accruals without creating VAT transactions or revenue",
+      "type": "object",
+      "properties": {
+        "recordType": { "type": "string", "enum": ["receivable", "customer_credit", "supplier_payable_invoice", "supplier_opening_accrual"] },
+        "sourceKey": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "sourceReference": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "counterpartyId": { "type": "string", "maxLength": 128 },
+        "counterpartySourceId": { "type": "string", "maxLength": 128 },
+        "counterpartyName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "recordedDate": { "type": "string", "maxLength": 32 },
+        "dueDate": { "type": "string", "maxLength": 32 },
+        "outstandingUSD": { "type": "number" },
+        "migrationTreatment": { "type": "string", "maxLength": 200 },
+        "sourceStatus": { "type": "string", "maxLength": 80 },
+        "matchedSupplierInvoiceId": { "type": "string", "maxLength": 128 },
+        "matchedSupplierInvoiceNo": { "type": "string", "maxLength": 80 },
+        "isMatchedExisting": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "preservedMetadata": { "type": "object" },
+        "asOfDate": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "importRunId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "viewerUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["recordType", "sourceKey", "sourceReference", "counterpartyName", "outstandingUSD", "isMatchedExisting", "asOfDate", "importRunId", "ownerUid", "viewerUids", "createdAt", "updatedAt"]
+    },
+    "MigrationRun": {
+      "title": "Legacy Data Import Run",
+      "description": "Management-only audit snapshot and reconciliation summary for legacy data imports",
+      "type": "object",
+      "properties": {
+        "sourceSystem": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "targetSystem": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "asOfDate": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "payloadFingerprint": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "status": { "type": "string", "enum": ["in_progress", "completed", "partial_failed"] },
+        "executedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "executedByName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "totalPlanned": { "type": "number" },
+        "createdCount": { "type": "number" },
+        "matchedCount": { "type": "number" },
+        "skippedCount": { "type": "number" },
+        "failedCount": { "type": "number" },
+        "grossReceivablesUSD": { "type": "number" },
+        "unappliedCreditsUSD": { "type": "number" },
+        "netReceivablesUSD": { "type": "number" },
+        "importedPayablesUSD": { "type": "number" },
+        "matchedExistingPayablesUSD": { "type": "number" },
+        "accrualPayablesUSD": { "type": "number" },
+        "totalSupplierPayablesUSD": { "type": "number" },
+        "trialBalanceDebitUSD": { "type": "number" },
+        "trialBalanceCreditUSD": { "type": "number" },
+        "controlsVerified": { "type": "boolean" },
+        "systemUserReferences": { "type": "array" },
+        "alreadyCreatedInTargetCount": { "type": "number" },
+        "constraintsCount": { "type": "number" },
+        "hasLiabilityBalancesTable": { "type": "boolean" },
+        "hasPayableLedgerTable": { "type": "boolean" },
+        "failedKeys": { "type": "array" },
+        "lastError": { "type": "string", "maxLength": 500 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "adminUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sourceSystem", "targetSystem", "asOfDate", "payloadFingerprint", "status", "executedByUid", "executedByName", "totalPlanned", "createdCount", "matchedCount", "skippedCount", "failedCount", "controlsVerified", "ownerUid", "adminUids", "createdAt", "updatedAt"]
+    },
+    "MigrationRunRecord": {
+      "title": "Legacy Import Record Audit",
+      "description": "Per-record outcome and source key tracking for idempotency and retry/resume",
+      "type": "object",
+      "properties": {
+        "importRunId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "category": { "type": "string", "enum": ["customer", "supplier", "account", "pending_job", "receivable", "customer_credit", "supplier_payable"] },
+        "sourceKey": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "displayLabel": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "outcome": { "type": "string", "enum": ["created", "matched", "skipped", "failed"] },
+        "targetCollection": { "type": "string", "maxLength": 64 },
+        "targetDocId": { "type": "string", "maxLength": 128 },
+        "errorMessage": { "type": "string", "maxLength": 500 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "adminUids": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["importRunId", "category", "sourceKey", "displayLabel", "outcome", "ownerUid", "adminUids", "updatedAt"]
+    },
+    "MigrationReferenceTable": {
+      "title": "Legacy Import Reference Table",
+      "description": "Read-only 2D source table snapshot (liabilityBalances / payableLedger) flattened into row cell maps for Firestore compatibility",
+      "type": "object",
+      "properties": {
+        "tableName": { "type": "string", "enum": ["liabilityBalances", "payableLedger"] },
+        "headers": { "type": "array" },
+        "rows": { "type": "array" },
+        "rowCount": { "type": "number" },
+        "importRunId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "adminUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tableName", "headers", "rows", "rowCount", "importRunId", "ownerUid", "adminUids", "createdAt"]
     }
   },
   "firestore": {
@@ -618,6 +768,26 @@
     "/requisitions/{requisitionId}": {
       "schema": { "$ref": "#/entities/Requisition" },
       "description": "Internal purchase, material issue, and petty cash requisitions"
+    },
+    "/suppliers/{supplierId}": {
+      "schema": { "$ref": "#/entities/Supplier" },
+      "description": "Master supplier contact directory"
+    },
+    "/openingBalances/{recordId}": {
+      "schema": { "$ref": "#/entities/OpeningBalanceRecord" },
+      "description": "Historical opening receivables, unapplied customer credits, and supplier payables"
+    },
+    "/migrationRuns/{runId}": {
+      "schema": { "$ref": "#/entities/MigrationRun" },
+      "description": "Management-only legacy data import audit runs"
+    },
+    "/migrationRuns/{runId}/records/{recordId}": {
+      "schema": { "$ref": "#/entities/MigrationRunRecord" },
+      "description": "Management-only per-record audit trail for legacy data import"
+    },
+    "/migrationRuns/{runId}/tables/{tableId}": {
+      "schema": { "$ref": "#/entities/MigrationReferenceTable" },
+      "description": "Management-only read-only reference tables from legacy export"
     }
   }
 }

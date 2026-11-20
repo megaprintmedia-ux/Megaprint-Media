@@ -152,6 +152,13 @@ const NAV_ITEMS: NavItem[] = [
     roles: ['management'],
     group: 'People & Admin',
   },
+  {
+    id: 'legacy-import',
+    label: 'Legacy Data Import',
+    icon: FileSpreadsheet,
+    roles: ['management'],
+    group: 'People & Admin',
+  },
 ];
 
 const VAT_ONLY_ALLOWED_SECTIONS: NavSection[] = [

@@ -4,6 +4,8 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
+  getDocs,
   onSnapshot,
   orderBy,
   query,
@@ -12,6 +14,7 @@ import {
   updateDoc,
   where,
   writeBatch,
+  type DocumentReference,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
@@ -43,8 +46,15 @@ import {
   Job,
   JobCostEntry,
   LeaveRequest,
+  MigrationRecordCategory,
+  MigrationRecordOutcome,
+  MigrationReferenceTable,
+  MigrationRun,
+  MigrationRunRecord,
+  MigrationRunStatus,
   NoteAudience,
   NoteTone,
+  OpeningBalanceRecord,
   OperationalNote,
   PayrollRun,
   PricingMode,
@@ -53,6 +63,7 @@ import {
   RequisitionPriority,
   RequisitionStatus,
   RequisitionType,
+  Supplier,
   SupplierInvoice,
   SupplierInvoiceCategory,
   SupplierInvoiceStatus,
@@ -72,6 +83,13 @@ import {
   round2,
   summarizeTaxBreakdown,
 } from '../utils/vat';
+import {
+  chunkArray,
+  filterPlanForExecution,
+  LegacyImportPlan,
+  makeDeterministicId,
+  normalizePaymentTermsDays,
+} from '../utils/legacyImport';
 
 function mapMethodToCashAccount(
   method: string,
@@ -167,6 +185,9 @@ export function useErpData() {
   const [goodsReceipts, setGoodsReceipts] = useState<GoodsReceipt[]>([]);
   const [requisitions, setRequisitions] = useState<Requisition[]>([]);
   const [cashBookEntries, setCashBookEntries] = useState<CashBookEntry[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [openingBalances, setOpeningBalances] = useState<OpeningBalanceRecord[]>([]);
+  const [migrationRuns, setMigrationRuns] = useState<MigrationRun[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -236,6 +257,9 @@ export function useErpData() {
       setEmployees([]);
       setPayrollRuns([]);
       setCashBookEntries([]);
+      setSuppliers([]);
+      setOpeningBalances([]);
+      setMigrationRuns([]);
       setUsers([]);
       setUserInvites([]);
 
@@ -613,9 +637,88 @@ export function useErpData() {
           (err) => handleFirestoreError(err, OperationType.LIST, 'userInvites')
         )
       );
+
+      const migrationRunsQuery = isBootAdmin
+        ? query(collection(db, 'migrationRuns'))
+        : query(
+            collection(db, 'migrationRuns'),
+            where('adminUids', 'array-contains', user.uid)
+          );
+      unsubs.push(
+        onSnapshot(
+          migrationRunsQuery,
+          (snap) => {
+            const list = snap.docs
+              .map((d) => ({
+                id: d.id,
+                ...(d.data() as Omit<MigrationRun, 'id'>),
+              }))
+              .sort(
+                (a, b) =>
+                  getCreatedMillis(b.updatedAt || b.createdAt) -
+                  getCreatedMillis(a.updatedAt || a.createdAt)
+              );
+            setMigrationRuns(list);
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'migrationRuns')
+        )
+      );
     } else {
       setUsers([]);
       setUserInvites([]);
+      setMigrationRuns([]);
+    }
+
+    // Suppliers Master Register (All full active staff)
+    const suppliersQuery = isBootAdmin
+      ? query(collection(db, 'suppliers'))
+      : query(
+          collection(db, 'suppliers'),
+          where('staffUids', 'array-contains', user.uid)
+        );
+    unsubs.push(
+      onSnapshot(
+        suppliersQuery,
+        (snap) => {
+          const list = snap.docs
+            .map((d) => ({
+              id: d.id,
+              ...(d.data() as Omit<Supplier, 'id'>),
+            }))
+            .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+          setSuppliers(list);
+        },
+        (err) => handleFirestoreError(err, OperationType.LIST, 'suppliers')
+      )
+    );
+
+    // Historical Opening Balances (Accounts/Management + Sales receivables/credits; excluded from VAT-only auditor)
+    if (isAccountsOrMgmt || profile.role === 'sales') {
+      const obQuery = isBootAdmin
+        ? query(collection(db, 'openingBalances'))
+        : query(
+            collection(db, 'openingBalances'),
+            where('viewerUids', 'array-contains', user.uid)
+          );
+      unsubs.push(
+        onSnapshot(
+          obQuery,
+          (snap) => {
+            const list = snap.docs
+              .map((d) => ({
+                id: d.id,
+                ...(d.data() as Omit<OpeningBalanceRecord, 'id'>),
+              }))
+              .sort((a, b) =>
+                (a.counterpartyName || '').localeCompare(b.counterpartyName || '')
+              );
+            setOpeningBalances(list);
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'openingBalances')
+        )
+      );
+    } else {
+      setOpeningBalances([]);
     }
 
     return () => {
@@ -679,6 +782,23 @@ export function useErpData() {
       });
     return Array.from(uidSet);
   }, [user?.uid, users]);
+
+  const salesAndFinanceViewerUids = useMemo(() => {
+    const uidSet = new Set<string>();
+    if (user?.uid && !isVatAuditorOnly) uidSet.add(user.uid);
+    users
+      .filter(
+        (u) =>
+          u.status === 'active' &&
+          (u.role === 'management' ||
+            u.role === 'sales' ||
+            (u.role === 'accounts' && u.taxScope !== 'vat_only'))
+      )
+      .forEach((u) => {
+        if (uidSet.size < 10) uidSet.add(u.uid);
+      });
+    return Array.from(uidSet);
+  }, [user?.uid, isVatAuditorOnly, users]);
 
   // ---------------------------------------------------------------------------
   // Mutations
@@ -913,7 +1033,7 @@ export function useErpData() {
         vatRegNumber: cleanVatReg,
         isVatRegistered: Boolean(input.isVatRegistered ?? Boolean(cleanVatReg)),
         address: trimStr(input.address, 300),
-        paymentTermsDays: Math.max(0, Math.min(365, Number(input.paymentTermsDays) || 30)),
+        paymentTermsDays: normalizePaymentTermsDays(input.paymentTermsDays, 30),
         notes: trimStr(input.notes, 1000),
         ownerUid: user.uid,
         staffUids: activeStaffUids,
@@ -944,7 +1064,7 @@ export function useErpData() {
         clean.isVatRegistered = Boolean(input.isVatRegistered);
       if (input.address !== undefined) clean.address = trimStr(input.address, 300);
       if (input.paymentTermsDays !== undefined)
-        clean.paymentTermsDays = Math.max(0, Math.min(365, Number(input.paymentTermsDays) || 0));
+        clean.paymentTermsDays = normalizePaymentTermsDays(input.paymentTermsDays, 0);
       if (input.notes !== undefined) clean.notes = trimStr(input.notes, 1000);
       await updateDoc(doc(db, 'clients', clientId), clean);
     } catch (error) {
@@ -3321,6 +3441,1010 @@ export function useErpData() {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // Suppliers Master Register CRUD & Controlled Legacy Data Importer
+  // ---------------------------------------------------------------------------
+
+  const createSupplier = async (
+    input: Omit<Supplier, 'id' | 'ownerUid' | 'staffUids' | 'createdAt' | 'updatedAt'>
+  ) => {
+    if (!user || isVatAuditorOnly) return undefined;
+    const cleanVatReg = trimStr(input.vatRegNumber, 64).toUpperCase();
+    try {
+      const ref = await addDoc(collection(db, 'suppliers'), {
+        name: trimStr(input.name, 160),
+        contactName: trimStr(input.contactName, 120),
+        phone: trimStr(input.phone, 40),
+        email: trimStr(input.email, 200),
+        address: trimStr(input.address, 300),
+        zimraTin: trimStr(input.zimraTin, 64).toUpperCase(),
+        vatRegNumber: cleanVatReg,
+        isVatRegistered: Boolean(input.isVatRegistered ?? Boolean(cleanVatReg)),
+        notes: trimStr(input.notes, 1000),
+        ownerUid: user.uid,
+        staffUids: activeStaffUids,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return ref.id;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'suppliers');
+    }
+  };
+
+  const updateSupplier = async (
+    supplierId: string,
+    input: Partial<Omit<Supplier, 'id' | 'ownerUid' | 'createdAt' | 'updatedAt'>>
+  ) => {
+    if (!user || isVatAuditorOnly) return;
+    try {
+      const clean: Record<string, unknown> = { updatedAt: serverTimestamp() };
+      if (input.name !== undefined) clean.name = trimStr(input.name, 160);
+      if (input.contactName !== undefined) clean.contactName = trimStr(input.contactName, 120);
+      if (input.phone !== undefined) clean.phone = trimStr(input.phone, 40);
+      if (input.email !== undefined) clean.email = trimStr(input.email, 200);
+      if (input.address !== undefined) clean.address = trimStr(input.address, 300);
+      if (input.zimraTin !== undefined)
+        clean.zimraTin = trimStr(input.zimraTin, 64).toUpperCase();
+      if (input.vatRegNumber !== undefined)
+        clean.vatRegNumber = trimStr(input.vatRegNumber, 64).toUpperCase();
+      if (input.isVatRegistered !== undefined)
+        clean.isVatRegistered = Boolean(input.isVatRegistered);
+      if (input.notes !== undefined) clean.notes = trimStr(input.notes, 1000);
+      await updateDoc(doc(db, 'suppliers', supplierId), clean);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `suppliers/${supplierId}`);
+    }
+  };
+
+  const deleteSupplier = async (supplierId: string) => {
+    if (!user || !isManagement) return;
+    try {
+      await deleteDoc(doc(db, 'suppliers', supplierId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `suppliers/${supplierId}`);
+    }
+  };
+
+  const subscribeMigrationRunDetails = (
+    runId: string,
+    onRecords: (records: MigrationRunRecord[]) => void,
+    onTables: (tables: MigrationReferenceTable[]) => void
+  ) => {
+    if (!user || !isManagement || !runId) {
+      onRecords([]);
+      onTables([]);
+      return () => {};
+    }
+    const isBootAdmin =
+      user.email?.toLowerCase() === 'megaprintmedia@gmail.com' && user.emailVerified;
+
+    const recQ = isBootAdmin
+      ? query(collection(db, 'migrationRuns', runId, 'records'))
+      : query(
+          collection(db, 'migrationRuns', runId, 'records'),
+          where('adminUids', 'array-contains', user.uid)
+        );
+    const tblQ = isBootAdmin
+      ? query(collection(db, 'migrationRuns', runId, 'tables'))
+      : query(
+          collection(db, 'migrationRuns', runId, 'tables'),
+          where('adminUids', 'array-contains', user.uid)
+        );
+
+    const u1 = onSnapshot(
+      recQ,
+      (snap) => {
+        onRecords(
+          snap.docs
+            .map((d) => ({
+              id: d.id,
+              ...(d.data() as Omit<MigrationRunRecord, 'id'>),
+            }))
+            .sort((a, b) => a.category.localeCompare(b.category) || a.displayLabel.localeCompare(b.displayLabel))
+        );
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, `migrationRuns/${runId}/records`)
+    );
+    const u2 = onSnapshot(
+      tblQ,
+      (snap) => {
+        onTables(
+          snap.docs.map((d) => ({
+            id: d.id,
+            ...(d.data() as Omit<MigrationReferenceTable, 'id'>),
+          }))
+        );
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, `migrationRuns/${runId}/tables`)
+    );
+    return () => {
+      u1();
+      u2();
+    };
+  };
+
+  const executeLegacyImport = async (
+    rawPlan: LegacyImportPlan,
+    options?: {
+      retryFailedOnly?: boolean;
+      resumeRunId?: string;
+      failedKeys?: string[];
+      onProgress?: (progress: { phase: string; done: number; total: number }) => void;
+    }
+  ): Promise<{
+    runId: string;
+    status: MigrationRunStatus;
+    createdCount: number;
+    matchedCount: number;
+    skippedCount: number;
+    failedCount: number;
+    failedKeys: string[];
+    lastError: string;
+  }> => {
+    if (!user || !profile || !isManagement) {
+      throw new Error('Only active Management accounts can run legacy data imports.');
+    }
+    if (!rawPlan.validStructure || !rawPlan.controlsVerified || rawPlan.blockingErrors.length > 0) {
+      throw new Error(
+        rawPlan.blockingErrors[0] ||
+          'Import blocked: resolve validation or control total mismatches first.'
+      );
+    }
+
+    const plan = options?.retryFailedOnly
+      ? filterPlanForExecution(rawPlan, {
+          retryFailedOnly: true,
+          failedKeys: options.failedKeys || [],
+        })
+      : rawPlan;
+
+    const runId = options?.resumeRunId || plan.runId;
+    const executedByName =
+      trimStr(profile.displayName, 120) || user.email || 'Management';
+    const adminUids = activeAdminUids;
+    const staffUids = activeStaffUids;
+    const hrUids = hrViewerUids;
+    const salesFinUids = salesAndFinanceViewerUids;
+
+    interface BatchOp {
+      ref: DocumentReference;
+      mode: 'set' | 'update';
+      data: Record<string, unknown>;
+      category: MigrationRecordCategory;
+      sourceKey: string;
+      displayLabel: string;
+      intendedOutcome: MigrationRecordOutcome;
+      targetCollection: string;
+      targetDocId: string;
+    }
+
+    interface OutcomeEntry {
+      category: MigrationRecordCategory;
+      sourceKey: string;
+      displayLabel: string;
+      outcome: MigrationRecordOutcome;
+      targetCollection: string;
+      targetDocId: string;
+      errorMessage: string;
+    }
+
+    const outcomes = new Map<string, OutcomeEntry>();
+    const recordStaticOutcome = (
+      category: MigrationRecordCategory,
+      sourceKey: string,
+      displayLabel: string,
+      outcome: MigrationRecordOutcome,
+      targetCollection: string,
+      targetDocId: string,
+      errorMessage = ''
+    ) => {
+      outcomes.set(`${category}:${sourceKey}`, {
+        category,
+        sourceKey,
+        displayLabel: displayLabel.slice(0, 200),
+        outcome,
+        targetCollection,
+        targetDocId,
+        errorMessage: errorMessage.slice(0, 500),
+      });
+    };
+
+    const runPhaseBatches = async (phaseLabel: string, ops: BatchOp[]) => {
+      const chunks = chunkArray(ops, 350);
+      let completed = 0;
+      for (const chunk of chunks) {
+        options?.onProgress?.({ phase: phaseLabel, done: completed, total: ops.length });
+        try {
+          const batch = writeBatch(db);
+          chunk.forEach((op) => {
+            if (op.mode === 'set') {
+              batch.set(op.ref, op.data);
+            } else {
+              batch.update(op.ref, op.data);
+            }
+          });
+          await batch.commit();
+          chunk.forEach((op) => {
+            recordStaticOutcome(
+              op.category,
+              op.sourceKey,
+              op.displayLabel,
+              op.intendedOutcome,
+              op.targetCollection,
+              op.targetDocId
+            );
+          });
+          completed += chunk.length;
+        } catch {
+          // Batch failed: fall back to per-record writes so partial successes are preserved
+          for (const op of chunk) {
+            try {
+              if (op.mode === 'set') {
+                await setDoc(op.ref, op.data);
+              } else {
+                await updateDoc(op.ref, op.data);
+              }
+              recordStaticOutcome(
+                op.category,
+                op.sourceKey,
+                op.displayLabel,
+                op.intendedOutcome,
+                op.targetCollection,
+                op.targetDocId
+              );
+            } catch (singleErr) {
+              recordStaticOutcome(
+                op.category,
+                op.sourceKey,
+                op.displayLabel,
+                'failed',
+                op.targetCollection,
+                op.targetDocId,
+                singleErr instanceof Error ? singleErr.message : String(singleErr)
+              );
+            }
+            completed += 1;
+          }
+        }
+      }
+      options?.onProgress?.({ phase: phaseLabel, done: ops.length, total: ops.length });
+    };
+
+    // -------------------------------------------------------------------------
+    // Phase 0: Initialize / Resume /migrationRuns/{runId} + raw 2D audit tables
+    // -------------------------------------------------------------------------
+    options?.onProgress?.({ phase: 'Initializing audit run snapshot', done: 0, total: 1 });
+    const runRef = doc(db, 'migrationRuns', runId);
+    const existingRunSnap = await getDoc(runRef);
+    const runOwnerUid = existingRunSnap.exists()
+      ? String(existingRunSnap.data()?.ownerUid || user.uid)
+      : user.uid;
+
+    const runPayloadBase = {
+      sourceSystem: trimStr(plan.sourceSystem, 120) || 'Legacy ERP',
+      targetSystem: trimStr(plan.targetSystem, 120) || 'Megaprint ERP',
+      asOfDate: trimStr(plan.asOfDate, 32),
+      payloadFingerprint: trimStr(plan.payloadFingerprint, 128),
+      status: 'in_progress' as MigrationRunStatus,
+      executedByUid: user.uid,
+      executedByName,
+      totalPlanned: rawPlan.summaryCounts.totalPlanned,
+      createdCount: 0,
+      matchedCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+      grossReceivablesUSD: plan.reconciliation.grossReceivablesUSD,
+      unappliedCreditsUSD: plan.reconciliation.unappliedCreditsUSD,
+      netReceivablesUSD: plan.reconciliation.netReceivablesUSD,
+      importedPayablesUSD: plan.reconciliation.importedPayablesUSD,
+      matchedExistingPayablesUSD: plan.reconciliation.matchedExistingPayablesUSD,
+      accrualPayablesUSD: plan.reconciliation.accrualPayablesUSD,
+      totalSupplierPayablesUSD: plan.reconciliation.totalSourcePayablesUSD,
+      trialBalanceDebitUSD: plan.reconciliation.trialBalanceDebitUSD,
+      trialBalanceCreditUSD: plan.reconciliation.trialBalanceCreditUSD,
+      controlsVerified: plan.controlsVerified,
+      systemUserReferences: plan.systemUserReferences.slice(0, 200),
+      alreadyCreatedInTargetCount: plan.alreadyCreatedInTarget.length,
+      constraintsCount: plan.constraints.length,
+      hasLiabilityBalancesTable:
+        plan.liabilityBalancesTable.headers.length > 0 ||
+        plan.liabilityBalancesTable.rows.length > 0,
+      hasPayableLedgerTable:
+        plan.payableLedgerTable.headers.length > 0 ||
+        plan.payableLedgerTable.rows.length > 0,
+      failedKeys: [],
+      lastError: '',
+      ownerUid: runOwnerUid,
+      adminUids,
+    };
+
+    if (!existingRunSnap.exists()) {
+      const p0Batch = writeBatch(db);
+      p0Batch.set(runRef, {
+        ...runPayloadBase,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      if (runPayloadBase.hasLiabilityBalancesTable) {
+        p0Batch.set(doc(db, 'migrationRuns', runId, 'tables', 'liabilityBalances'), {
+          tableName: 'liabilityBalances',
+          headers: plan.liabilityBalancesTable.headers,
+          rows: plan.liabilityBalancesTable.rows,
+          rowCount: plan.liabilityBalancesTable.rowCount,
+          importRunId: runId,
+          ownerUid: user.uid,
+          adminUids,
+          createdAt: serverTimestamp(),
+        });
+      }
+      if (runPayloadBase.hasPayableLedgerTable) {
+        p0Batch.set(doc(db, 'migrationRuns', runId, 'tables', 'payableLedger'), {
+          tableName: 'payableLedger',
+          headers: plan.payableLedgerTable.headers,
+          rows: plan.payableLedgerTable.rows,
+          rowCount: plan.payableLedgerTable.rowCount,
+          importRunId: runId,
+          ownerUid: user.uid,
+          adminUids,
+          createdAt: serverTimestamp(),
+        });
+      }
+      await p0Batch.commit();
+    } else {
+      await updateDoc(runRef, {
+        ...runPayloadBase,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 1: Master Entities (clients, suppliers, chartOfAccounts)
+    // Must commit before Phase 2 so jobs satisfy existsAfter(/clients/{id})
+    // -------------------------------------------------------------------------
+    const phase1Ops: BatchOp[] = [];
+    const existingClientMap = new Map(clients.map((c) => [c.id, c]));
+    const existingSupplierMap = new Map(suppliers.map((s) => [s.id, s]));
+    const existingCoaMap = new Map(chartOfAccounts.map((a) => [a.id, a]));
+
+    for (const c of plan.customers) {
+      if (c.action === 'skip_existing') {
+        if (!options?.retryFailedOnly) {
+          recordStaticOutcome(
+            'customer',
+            c.sourceKey,
+            c.resolvedCompanyName,
+            'skipped',
+            'clients',
+            c.docId
+          );
+        }
+        continue;
+      }
+      if (c.action === 'blocked') {
+        recordStaticOutcome(
+          'customer',
+          c.sourceKey,
+          c.resolvedCompanyName || c.sourceKey,
+          'failed',
+          'clients',
+          c.docId,
+          c.error || 'Blocked by validation'
+        );
+        continue;
+      }
+      const targetRef = doc(db, 'clients', c.docId);
+      const alreadyExists = existingClientMap.has(c.docId) || (await getDoc(targetRef)).exists();
+      if (c.action === 'match_update' || alreadyExists) {
+        const existingRec = existingClientMap.get(c.docId);
+        const updatePayload: Record<string, unknown> = {
+          legacySourceId: trimStr(c.source.sourceId, 128),
+          legacyPricingMode: trimStr(c.legacyPricingMode, 64),
+          creditApproved: c.creditApproved,
+          creditLimitUSD: round2(c.creditLimitUSD),
+          importRunId: runId,
+          updatedAt: serverTimestamp(),
+        };
+        if (existingRec) {
+          if (!existingRec.email && c.resolvedEmail) updatePayload.email = trimStr(c.resolvedEmail, 200);
+          if (!existingRec.phone && c.resolvedPhone) updatePayload.phone = trimStr(c.resolvedPhone, 40);
+          if (!existingRec.address && c.resolvedAddress)
+            updatePayload.address = trimStr(c.resolvedAddress, 300);
+          if (!existingRec.vatRegNumber && c.resolvedVatReg) {
+            updatePayload.vatRegNumber = trimStr(c.resolvedVatReg, 64).toUpperCase();
+            updatePayload.isVatRegistered = true;
+          }
+        }
+        phase1Ops.push({
+          ref: targetRef,
+          mode: 'update',
+          data: updatePayload,
+          category: 'customer',
+          sourceKey: c.sourceKey,
+          displayLabel: c.resolvedCompanyName,
+          intendedOutcome: 'matched',
+          targetCollection: 'clients',
+          targetDocId: c.docId,
+        });
+      } else {
+        phase1Ops.push({
+          ref: targetRef,
+          mode: 'set',
+          data: {
+            companyName: trimStr(c.resolvedCompanyName, 160),
+            contactName: trimStr(c.resolvedContactName, 120),
+            email: trimStr(c.resolvedEmail, 200),
+            phone: trimStr(c.resolvedPhone, 40),
+            taxPin: trimStr(c.resolvedVatReg, 64).toUpperCase(),
+            zimraTin: '',
+            vatRegNumber: trimStr(c.resolvedVatReg, 64).toUpperCase(),
+            isVatRegistered: Boolean(c.resolvedVatReg),
+            address: trimStr(c.resolvedAddress, 300),
+            paymentTermsDays: normalizePaymentTermsDays(c.resolvedPaymentTermsDays, 30),
+            notes: trimStr(c.resolvedNotes, 1000),
+            legacySourceId: trimStr(c.source.sourceId, 128),
+            legacyPricingMode: trimStr(c.legacyPricingMode, 64),
+            creditApproved: c.creditApproved,
+            creditLimitUSD: round2(c.creditLimitUSD),
+            importRunId: runId,
+            ownerUid: user.uid,
+            staffUids,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          category: 'customer',
+          sourceKey: c.sourceKey,
+          displayLabel: c.resolvedCompanyName,
+          intendedOutcome: 'created',
+          targetCollection: 'clients',
+          targetDocId: c.docId,
+        });
+      }
+    }
+
+    for (const s of plan.suppliers) {
+      if (s.action === 'skip_existing') {
+        if (!options?.retryFailedOnly) {
+          recordStaticOutcome(
+            'supplier',
+            s.sourceKey,
+            s.resolvedName,
+            'skipped',
+            'suppliers',
+            s.docId
+          );
+        }
+        continue;
+      }
+      if (s.action === 'blocked') {
+        recordStaticOutcome(
+          'supplier',
+          s.sourceKey,
+          s.resolvedName || s.sourceKey,
+          'failed',
+          'suppliers',
+          s.docId,
+          s.error || 'Blocked by validation'
+        );
+        continue;
+      }
+      const targetRef = doc(db, 'suppliers', s.docId);
+      const alreadyExists =
+        existingSupplierMap.has(s.docId) || (await getDoc(targetRef)).exists();
+      if (s.action === 'match_update' || alreadyExists) {
+        const existingSup = existingSupplierMap.get(s.docId);
+        const updatePayload: Record<string, unknown> = {
+          legacySourceKey: trimStr(s.sourceKey, 128),
+          importRunId: runId,
+          updatedAt: serverTimestamp(),
+        };
+        if (existingSup) {
+          if (!existingSup.phone && s.resolvedPhone) updatePayload.phone = trimStr(s.resolvedPhone, 40);
+          if (!existingSup.email && s.resolvedEmail) updatePayload.email = trimStr(s.resolvedEmail, 200);
+          if (!existingSup.address && s.resolvedAddress)
+            updatePayload.address = trimStr(s.resolvedAddress, 300);
+        }
+        phase1Ops.push({
+          ref: targetRef,
+          mode: 'update',
+          data: updatePayload,
+          category: 'supplier',
+          sourceKey: s.sourceKey,
+          displayLabel: s.resolvedName,
+          intendedOutcome: 'matched',
+          targetCollection: 'suppliers',
+          targetDocId: s.docId,
+        });
+      } else {
+        phase1Ops.push({
+          ref: targetRef,
+          mode: 'set',
+          data: {
+            name: trimStr(s.resolvedName, 160),
+            contactName: '',
+            phone: trimStr(s.resolvedPhone, 40),
+            email: trimStr(s.resolvedEmail, 200),
+            address: trimStr(s.resolvedAddress, 300),
+            zimraTin: '',
+            vatRegNumber: '',
+            isVatRegistered: false,
+            notes: `Imported master supplier contact (${s.sourceKey})`,
+            legacySourceKey: trimStr(s.sourceKey, 128),
+            importRunId: runId,
+            ownerUid: user.uid,
+            staffUids,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          category: 'supplier',
+          sourceKey: s.sourceKey,
+          displayLabel: s.resolvedName,
+          intendedOutcome: 'created',
+          targetCollection: 'suppliers',
+          targetDocId: s.docId,
+        });
+      }
+    }
+
+    for (const a of plan.accounts) {
+      if (a.action === 'skip_existing') {
+        if (!options?.retryFailedOnly) {
+          recordStaticOutcome(
+            'account',
+            a.sourceKey,
+            `${a.assignedCode} — ${a.source.name}`,
+            'skipped',
+            'chartOfAccounts',
+            a.docId
+          );
+        }
+        continue;
+      }
+      if (a.action === 'blocked') {
+        recordStaticOutcome(
+          'account',
+          a.sourceKey,
+          `${a.sourceKey} — ${a.source.name}`,
+          'failed',
+          'chartOfAccounts',
+          a.docId,
+          a.error || 'Blocked by validation'
+        );
+        continue;
+      }
+      const targetRef = doc(db, 'chartOfAccounts', a.docId);
+      const alreadyExists = existingCoaMap.has(a.docId) || (await getDoc(targetRef)).exists();
+      if (a.action === 'match_update' || alreadyExists) {
+        // Safely link AR 1200 / AP 2100 or previously imported legacy doc without overwriting native balances
+        phase1Ops.push({
+          ref: targetRef,
+          mode: 'update',
+          data: {
+            legacySourceCode: trimStr(a.source.sourceCode, 40),
+            legacyParentCode: trimStr(a.source.parentCode || '', 40),
+            legacyCurrencyLabel: trimStr(a.legacyCurrencyLabel, 40),
+            legacyNormalBalanceUSD: a.normalSideBalanceUSD,
+            legacyTrialDebitUSD: a.trialDebitUSD,
+            legacyTrialCreditUSD: a.trialCreditUSD,
+            importRunId: runId,
+            updatedAt: serverTimestamp(),
+          },
+          category: 'account',
+          sourceKey: a.sourceKey,
+          displayLabel: `${a.assignedCode} — ${a.source.name}`,
+          intendedOutcome: 'matched',
+          targetCollection: 'chartOfAccounts',
+          targetDocId: a.docId,
+        });
+      } else {
+        phase1Ops.push({
+          ref: targetRef,
+          mode: 'set',
+          data: {
+            code: trimStr(a.assignedCode, 24),
+            name: trimStr(a.source.name, 120),
+            accountType: a.mappedAccountType,
+            subType: a.mappedSubType,
+            currency: trimStr(a.nativeCurrency, 6) || 'USD',
+            bankName: '',
+            accountNumber: '',
+            branch: '',
+            openingBalance: 0, // Never inflate target Cash Book opening floats with legacy balances
+            isCashBookAccount: false,
+            isActive: a.source.active !== false,
+            notes: trimStr(a.mappingReason, 500),
+            legacySourceCode: trimStr(a.source.sourceCode, 40),
+            legacyParentCode: trimStr(a.source.parentCode || '', 40),
+            legacyCurrencyLabel: trimStr(a.legacyCurrencyLabel, 40),
+            legacyNormalBalanceUSD: a.normalSideBalanceUSD,
+            legacyTrialDebitUSD: a.trialDebitUSD,
+            legacyTrialCreditUSD: a.trialCreditUSD,
+            legacyImported: true,
+            importRunId: runId,
+            ownerUid: user.uid,
+            staffUids,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          category: 'account',
+          sourceKey: a.sourceKey,
+          displayLabel: `${a.assignedCode} — ${a.source.name}`,
+          intendedOutcome: 'created',
+          targetCollection: 'chartOfAccounts',
+          targetDocId: a.docId,
+        });
+      }
+    }
+
+    await runPhaseBatches('Phase 1/3: Clients, Suppliers & Accounts', phase1Ops);
+
+    // -------------------------------------------------------------------------
+    // Phase 2: Jobs & Historical Opening Balances
+    // -------------------------------------------------------------------------
+    const phase2Ops: BatchOp[] = [];
+    const existingJobIds = new Set(jobs.map((j) => j.id));
+    const existingObIds = new Set(openingBalances.map((o) => o.id));
+
+    for (const j of plan.pendingJobs) {
+      if (j.action === 'skip_existing') {
+        if (!options?.retryFailedOnly) {
+          recordStaticOutcome(
+            'pending_job',
+            j.sourceKey,
+            `${j.sourceKey} — ${j.resolvedClientName}`,
+            'skipped',
+            'jobs',
+            j.docId
+          );
+        }
+        continue;
+      }
+      if (j.action === 'blocked') {
+        recordStaticOutcome(
+          'pending_job',
+          j.sourceKey,
+          `${j.sourceKey} — ${j.resolvedClientName}`,
+          'failed',
+          'jobs',
+          j.docId,
+          j.error || 'Blocked by validation'
+        );
+        continue;
+      }
+      const targetRef = doc(db, 'jobs', j.docId);
+      const alreadyExists = existingJobIds.has(j.docId) || (await getDoc(targetRef)).exists();
+      if (alreadyExists) {
+        recordStaticOutcome(
+          'pending_job',
+          j.sourceKey,
+          `${j.sourceKey} — ${j.resolvedClientName}`,
+          'skipped',
+          'jobs',
+          j.docId
+        );
+        continue;
+      }
+
+      const specSummary = j.legacyLinesExtracted
+        ? `Imported with ${j.lineSpecsCount} line spec(s) · Prepared by: ${j.source.preparedBy || 'Unknown'}`
+        : `Line specifications NOT extracted from legacy system (${j.source.sourceStatus}). Preserved legacy value $${j.valueUSD.toFixed(2)} without inventing production items or tax split. Prepared by: ${j.source.preparedBy || 'Unknown'}`;
+
+      phase2Ops.push({
+        ref: targetRef,
+        mode: 'set',
+        data: {
+          jobNumber: trimStr(j.source.sourceReference, 40),
+          clientId: j.resolvedClientId,
+          clientName: trimStr(j.resolvedClientName, 160),
+          title: trimStr(
+            j.source.division
+              ? `${j.source.division} — ${j.source.sourceReference}`
+              : `Legacy Job ${j.source.sourceReference}`,
+            200
+          ),
+          category: j.mappedCategory,
+          status: j.mappedStatus,
+          priority: 'Standard',
+          dueDate: trimStr(j.source.dueDate || '', 32),
+          printMethod: trimStr(j.source.division || 'Legacy Import', 120),
+          substrateOrFabric: '',
+          colorSpecs: '',
+          quantity: j.legacyLinesExtracted ? 1 : 0,
+          sizeBreakdown: {
+            XS: 0,
+            S: 0,
+            M: 0,
+            L: 0,
+            XL: 0,
+            XXL: 0,
+            XXXL: 0,
+            Custom: j.legacyLinesExtracted ? 1 : 0,
+          },
+          artworkNotes: trimStr(specSummary, 2000),
+          tailoringMeasurements: '',
+          checklist: {
+            prePressOrPattern: j.mappedStatus !== 'Quoted',
+            materialsIssued:
+              j.mappedStatus === 'In Production' || j.mappedStatus === 'Ready for Dispatch',
+            printingOrTailoring: j.mappedStatus === 'Ready for Dispatch',
+            qualityControl: j.mappedStatus === 'Ready for Dispatch',
+            dispatchReady: j.mappedStatus === 'Ready for Dispatch',
+          },
+          pricingMode: 'exclusive',
+          vatTreatment: j.legacyLinesExtracted ? 'exempt' : 'unknown',
+          vatRate: 0,
+          unitPrice: j.legacyLinesExtracted ? round2(j.valueUSD) : 0,
+          netTotal: j.legacyLinesExtracted ? round2(j.valueUSD) : 0,
+          vatAmount: 0,
+          grossTotal: j.legacyLinesExtracted ? round2(j.valueUSD) : 0,
+          estimatedMaterialCost: 0,
+          estimatedLaborCost: 0,
+          estimatedSubcontractCost: 0,
+          estimatedOverheadCost: 0,
+          actualCostTotal: 0,
+          assignedSalesUid: '',
+          assignedSalesName: trimStr(j.source.salesOwner || '', 120),
+          assignedProductionName: '',
+          commissionRatePct: 0,
+          commissionBasis: 'gross_profit',
+          commissionAmount: 0,
+          commissionStatus: 'Pending',
+          legacySourceReference: trimStr(j.source.sourceReference, 120),
+          legacySourceStatus: trimStr(j.source.sourceStatus, 80),
+          legacyDivision: trimStr(j.source.division || '', 120),
+          legacyPreparedBy: trimStr(j.source.preparedBy || '', 120),
+          legacySalesOwner: trimStr(j.source.salesOwner || '', 120),
+          legacyValueUSD: round2(j.valueUSD),
+          legacyLinesExtracted: j.legacyLinesExtracted,
+          importRunId: runId,
+          ownerUid: user.uid,
+          staffUids,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        category: 'pending_job',
+        sourceKey: j.sourceKey,
+        displayLabel: `${j.sourceKey} — ${j.resolvedClientName}`,
+        intendedOutcome: 'created',
+        targetCollection: 'jobs',
+        targetDocId: j.docId,
+      });
+    }
+
+    const pushOpeningBalanceOp = async (
+      category: MigrationRecordCategory,
+      item: {
+        sourceKey: string;
+        docId: string;
+        action: string;
+        error?: string;
+      },
+      displayLabel: string,
+      recordData: Record<string, unknown>
+    ) => {
+      if (item.action === 'skip_existing') {
+        if (!options?.retryFailedOnly) {
+          recordStaticOutcome(
+            category,
+            item.sourceKey,
+            displayLabel,
+            'skipped',
+            'openingBalances',
+            item.docId
+          );
+        }
+        return;
+      }
+      if (item.action === 'blocked') {
+        recordStaticOutcome(
+          category,
+          item.sourceKey,
+          displayLabel,
+          'failed',
+          'openingBalances',
+          item.docId,
+          item.error || 'Blocked by validation'
+        );
+        return;
+      }
+      const targetRef = doc(db, 'openingBalances', item.docId);
+      const alreadyExists =
+        existingObIds.has(item.docId) || (await getDoc(targetRef)).exists();
+      if (alreadyExists) {
+        const { createdAt: _ignore, ownerUid: _ignoreOwner, ...updateFields } = recordData;
+        phase2Ops.push({
+          ref: targetRef,
+          mode: 'update',
+          data: {
+            ...updateFields,
+            updatedAt: serverTimestamp(),
+          },
+          category,
+          sourceKey: item.sourceKey,
+          displayLabel,
+          intendedOutcome: item.action === 'match_update' ? 'matched' : 'skipped',
+          targetCollection: 'openingBalances',
+          targetDocId: item.docId,
+        });
+      } else {
+        phase2Ops.push({
+          ref: targetRef,
+          mode: 'set',
+          data: {
+            ...recordData,
+            ownerUid: user.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          category,
+          sourceKey: item.sourceKey,
+          displayLabel,
+          intendedOutcome: item.action === 'match_update' ? 'matched' : 'created',
+          targetCollection: 'openingBalances',
+          targetDocId: item.docId,
+        });
+      }
+    };
+
+    for (const r of plan.receivables) {
+      await pushOpeningBalanceOp(
+        'receivable',
+        r,
+        `${r.source.sourceInvoiceReference} — ${r.resolvedClientName}`,
+        {
+          recordType: 'receivable',
+          sourceKey: trimStr(r.sourceKey, 160),
+          sourceReference: trimStr(r.source.sourceInvoiceReference, 120),
+          counterpartyId: trimStr(r.resolvedClientId, 128),
+          counterpartySourceId: trimStr(r.source.customerSourceId, 128),
+          counterpartyName: trimStr(r.resolvedClientName, 160),
+          recordedDate: trimStr(plan.asOfDate, 32),
+          dueDate: trimStr(r.dueDate, 32),
+          outstandingUSD: round2(r.outstandingUSD),
+          migrationTreatment: trimStr(r.migrationTreatment, 200),
+          sourceStatus: 'Opening Balance',
+          matchedSupplierInvoiceId: '',
+          matchedSupplierInvoiceNo: '',
+          isMatchedExisting: false,
+          notes: 'Historical opening receivable — excluded from VAT & current revenue',
+          asOfDate: trimStr(plan.asOfDate, 32),
+          importRunId: runId,
+          viewerUids: salesFinUids,
+        }
+      );
+    }
+
+    for (const cr of plan.customerCredits) {
+      await pushOpeningBalanceOp(
+        'customer_credit',
+        cr,
+        `Credit — ${cr.resolvedClientName}`,
+        {
+          recordType: 'customer_credit',
+          sourceKey: trimStr(cr.sourceKey, 160),
+          sourceReference: `UNAPPLIED-CREDIT-${cr.source.customerSourceId}`.slice(0, 120),
+          counterpartyId: trimStr(cr.resolvedClientId, 128),
+          counterpartySourceId: trimStr(cr.source.customerSourceId, 128),
+          counterpartyName: trimStr(cr.resolvedClientName, 160),
+          recordedDate: trimStr(plan.asOfDate, 32),
+          dueDate: '',
+          outstandingUSD: round2(cr.unappliedCreditUSD),
+          migrationTreatment: 'Unapplied historical customer credit',
+          sourceStatus: 'Unapplied Credit',
+          matchedSupplierInvoiceId: '',
+          matchedSupplierInvoiceNo: '',
+          isMatchedExisting: false,
+          notes: 'Historical unapplied customer credit kept separate from gross receivables',
+          asOfDate: trimStr(plan.asOfDate, 32),
+          importRunId: runId,
+          viewerUids: salesFinUids,
+        }
+      );
+    }
+
+    for (const sp of plan.supplierPayables) {
+      await pushOpeningBalanceOp(
+        'supplier_payable',
+        sp,
+        `${sp.sourceReference} — ${sp.supplierName}`,
+        {
+          recordType: sp.recordType,
+          sourceKey: trimStr(sp.sourceKey, 160),
+          sourceReference: trimStr(sp.sourceReference, 120),
+          counterpartyId: trimStr(sp.counterpartyId, 128),
+          counterpartySourceId: '',
+          counterpartyName: trimStr(sp.supplierName, 160),
+          recordedDate: trimStr(sp.recordedDate || plan.asOfDate, 32),
+          dueDate: trimStr(sp.dueDate, 32),
+          outstandingUSD: round2(sp.outstandingUSD),
+          migrationTreatment: trimStr(sp.reason, 200),
+          sourceStatus: trimStr(sp.sourceStatus, 80),
+          matchedSupplierInvoiceId: trimStr(sp.matchedSupplierInvoiceId, 128),
+          matchedSupplierInvoiceNo: trimStr(sp.matchedSupplierInvoiceNo, 80),
+          isMatchedExisting: sp.isMatchedExisting,
+          notes: trimStr(sp.notes, 1000),
+          preservedMetadata: sp.preservedMetadata,
+          asOfDate: trimStr(plan.asOfDate, 32),
+          importRunId: runId,
+          viewerUids: hrUids,
+        }
+      );
+    }
+
+    await runPhaseBatches('Phase 2/3: Jobs & Historical Opening Balances', phase2Ops);
+
+    // -------------------------------------------------------------------------
+    // Phase 3: Write /migrationRuns/{runId}/records audit docs & compute final status
+    // -------------------------------------------------------------------------
+    options?.onProgress?.({ phase: 'Phase 3/3: Recording audit trail', done: 0, total: outcomes.size });
+    const outcomeList = Array.from(outcomes.values());
+    const recChunks = chunkArray(outcomeList, 350);
+    let recDone = 0;
+    for (const chunk of recChunks) {
+      const recBatch = writeBatch(db);
+      chunk.forEach((entry) => {
+        const recId = makeDeterministicId('rec', `${entry.category}:${entry.sourceKey}`);
+        recBatch.set(doc(db, 'migrationRuns', runId, 'records', recId), {
+          importRunId: runId,
+          category: entry.category,
+          sourceKey: trimStr(entry.sourceKey, 160),
+          displayLabel: trimStr(entry.displayLabel, 200),
+          outcome: entry.outcome,
+          targetCollection: trimStr(entry.targetCollection, 64),
+          targetDocId: trimStr(entry.targetDocId, 128),
+          errorMessage: trimStr(entry.errorMessage, 500),
+          ownerUid: user.uid,
+          adminUids,
+          updatedAt: serverTimestamp(),
+        });
+      });
+      await recBatch.commit();
+      recDone += chunk.length;
+      options?.onProgress?.({
+        phase: 'Phase 3/3: Recording audit trail',
+        done: recDone,
+        total: outcomeList.length,
+      });
+    }
+
+    // Recompute totals across ALL recorded audit entries for this run (safe for retry/resume)
+    const allRecSnap = await getDocs(collection(db, 'migrationRuns', runId, 'records'));
+    const allRecs = allRecSnap.docs.map((d) => d.data() as MigrationRunRecord);
+    const createdCount = allRecs.filter((r) => r.outcome === 'created').length;
+    const matchedCount = allRecs.filter((r) => r.outcome === 'matched').length;
+    const skippedCount = allRecs.filter((r) => r.outcome === 'skipped').length;
+    const failedRecs = allRecs.filter((r) => r.outcome === 'failed');
+    const failedCount = failedRecs.length;
+    const failedKeys = failedRecs
+      .slice(0, 500)
+      .map((r) => `${r.category}:${r.sourceKey}`);
+    const lastError = trimStr(failedRecs[0]?.errorMessage || '', 500);
+    const finalStatus: MigrationRunStatus =
+      failedCount === 0 ? 'completed' : 'partial_failed';
+
+    await updateDoc(runRef, {
+      status: finalStatus,
+      createdCount,
+      matchedCount,
+      skippedCount,
+      failedCount,
+      failedKeys,
+      lastError,
+      updatedAt: serverTimestamp(),
+    });
+
+    return {
+      runId,
+      status: finalStatus,
+      createdCount,
+      matchedCount,
+      skippedCount,
+      failedCount,
+      failedKeys,
+      lastError,
+    };
+  };
+
   const seedSampleData = async () => {
     if (!user || !profile) return;
     const vatRate = settings.defaultVatRate ?? 15;
@@ -4529,6 +5653,9 @@ export function useErpData() {
     goodsReceipts,
     requisitions,
     cashBookEntries,
+    suppliers,
+    openingBalances,
+    migrationRuns,
     employees,
     timeEntries,
     leaveRequests,
@@ -4546,6 +5673,11 @@ export function useErpData() {
     deleteUserInvite,
     createClient,
     updateClient,
+    createSupplier,
+    updateSupplier,
+    deleteSupplier,
+    executeLegacyImport,
+    subscribeMigrationRunDetails,
     createJob,
     updateJob,
     deleteJob,

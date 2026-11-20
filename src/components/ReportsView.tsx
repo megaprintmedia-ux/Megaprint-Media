@@ -321,17 +321,23 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           'Variance',
           'Margin %',
         ],
-        ...reportData.jobCostRows.map(({ job, costing }) => [
-          job.jobNumber,
-          job.clientName,
-          job.category,
-          job.status,
-          job.netTotal.toFixed(2),
-          costing.estimatedTotal.toFixed(2),
-          job.actualCostTotal.toFixed(2),
-          costing.variance.toFixed(2),
-          costing.grossMarginPct.toFixed(1),
-        ]),
+        ...reportData.jobCostRows.map(({ job, costing }) => {
+          const unextracted =
+            job.legacyLinesExtracted === false || job.vatTreatment === 'unknown';
+          return [
+            job.jobNumber,
+            job.clientName,
+            job.category,
+            job.status,
+            unextracted
+              ? `Legacy ${(job.legacyValueUSD ?? 0).toFixed(2)} (Specs Missing)`
+              : job.netTotal.toFixed(2),
+            costing.estimatedTotal.toFixed(2),
+            job.actualCostTotal.toFixed(2),
+            costing.variance.toFixed(2),
+            unextracted ? 'Specs Missing' : costing.grossMarginPct.toFixed(1),
+          ];
+        }),
       ];
     } else if (effectiveTab === 'vat-audit') {
       rows = [
@@ -766,50 +772,67 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {reportData.jobCostRows.map(({ job, costing }) => (
-                    <tr key={job.id}>
-                      <td className="py-2.5 px-4 font-mono-nums font-semibold text-blue-700 whitespace-nowrap">
-                        {job.jobNumber}
-                      </td>
-                      <td className="py-2.5 px-4">
-                        <div className="font-medium text-slate-900">{job.title}</div>
-                        <div className="text-slate-500">{job.clientName}</div>
-                      </td>
-                      <td className="py-2.5 px-4 text-slate-700">{job.category}</td>
-                      <td className="py-2.5 px-4">
-                        <StatusText status={job.status} />
-                      </td>
-                      {role !== 'production' && (
-                        <td className="py-2.5 px-4 text-right font-mono-nums">
-                          {formatMoney(job.netTotal, settings.currency)}
+                  {reportData.jobCostRows.map(({ job, costing }) => {
+                    const unextracted =
+                      job.legacyLinesExtracted === false || job.vatTreatment === 'unknown';
+                    return (
+                      <tr key={job.id}>
+                        <td className="py-2.5 px-4 font-mono-nums font-semibold text-blue-700 whitespace-nowrap">
+                          {job.jobNumber}
                         </td>
-                      )}
-                      <td className="py-2.5 px-4 text-right font-mono-nums text-slate-600">
-                        {formatMoney(costing.estimatedTotal, settings.currency)}
-                      </td>
-                      <td className="py-2.5 px-4 text-right font-mono-nums font-medium">
-                        {formatMoney(job.actualCostTotal, settings.currency)}
-                      </td>
-                      <td
-                        className={`py-2.5 px-4 text-right font-mono-nums font-semibold ${
-                          costing.isOverBudget ? 'text-red-700' : 'text-emerald-700'
-                        }`}
-                      >
-                        {formatMoney(costing.variance, settings.currency)}
-                      </td>
-                      {role !== 'production' && (
+                        <td className="py-2.5 px-4">
+                          <div className="font-medium text-slate-900">{job.title}</div>
+                          <div className="text-slate-500">{job.clientName}</div>
+                        </td>
+                        <td className="py-2.5 px-4 text-slate-700">{job.category}</td>
+                        <td className="py-2.5 px-4">
+                          <StatusText status={job.status} />
+                        </td>
+                        {role !== 'production' && (
+                          <td className="py-2.5 px-4 text-right font-mono-nums">
+                            {unextracted ? (
+                              <div>
+                                <div className="text-slate-700">
+                                  {formatMoney(job.legacyValueUSD ?? 0, 'USD')}
+                                </div>
+                                <div className="text-[10px] text-amber-700">
+                                  Legacy (Specs Missing)
+                                </div>
+                              </div>
+                            ) : (
+                              formatMoney(job.netTotal, settings.currency)
+                            )}
+                          </td>
+                        )}
+                        <td className="py-2.5 px-4 text-right font-mono-nums text-slate-600">
+                          {formatMoney(costing.estimatedTotal, settings.currency)}
+                        </td>
+                        <td className="py-2.5 px-4 text-right font-mono-nums font-medium">
+                          {formatMoney(job.actualCostTotal, settings.currency)}
+                        </td>
                         <td
                           className={`py-2.5 px-4 text-right font-mono-nums font-semibold ${
-                            costing.grossMarginPct < 15
-                              ? 'text-red-700'
-                              : 'text-emerald-700'
+                            costing.isOverBudget ? 'text-red-700' : 'text-emerald-700'
                           }`}
                         >
-                          {costing.grossMarginPct.toFixed(1)}%
+                          {formatMoney(costing.variance, settings.currency)}
                         </td>
-                      )}
-                    </tr>
-                  ))}
+                        {role !== 'production' && (
+                          <td
+                            className={`py-2.5 px-4 text-right font-mono-nums font-semibold ${
+                              unextracted
+                                ? 'text-slate-400'
+                                : costing.grossMarginPct < 15
+                                  ? 'text-red-700'
+                                  : 'text-emerald-700'
+                            }`}
+                          >
+                            {unextracted ? '—' : `${costing.grossMarginPct.toFixed(1)}%`}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
