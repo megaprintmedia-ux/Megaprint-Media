@@ -362,12 +362,14 @@ service cloud.firestore {
     }
 
     function isValidJob(data) {
-      return data.keys().hasAll([
+      let keys = data.keys();
+      let legacySummary = data.get('legacyLinesExtracted', true) == false;
+      return keys.hasAll([
           'jobNumber', 'clientId', 'clientName', 'title', 'category', 'status', 'priority',
           'quantity', 'pricingMode', 'vatTreatment', 'vatRate', 'netTotal', 'vatAmount',
           'grossTotal', 'actualCostTotal', 'ownerUid', 'staffUids', 'createdAt', 'updatedAt'
         ]) &&
-        data.keys().hasOnly([
+        keys.hasOnly([
           'jobNumber', 'clientId', 'clientName', 'title', 'category', 'status', 'priority',
           'dueDate', 'printMethod', 'substrateOrFabric', 'colorSpecs', 'quantity',
           'sizeBreakdown', 'artworkNotes', 'tailoringMeasurements', 'checklist',
@@ -389,43 +391,43 @@ service cloud.firestore {
         data.category in ['Printing', 'Branding', 'Corporate Wear', 'Tailoring'] &&
         data.status in ['Quoted', 'Approved', 'In Production', 'Quality Control', 'Ready for Dispatch', 'Delivered', 'Completed', 'Cancelled'] &&
         data.priority in ['Standard', 'Urgent', 'Express'] &&
-        (!('dueDate' in data) || isOptionalStr(data.dueDate, 32)) &&
-        (!('printMethod' in data) || isOptionalStr(data.printMethod, 120)) &&
-        (!('substrateOrFabric' in data) || isOptionalStr(data.substrateOrFabric, 160)) &&
-        (!('colorSpecs' in data) || isOptionalStr(data.colorSpecs, 160)) &&
-        ((data.quantity is number && data.quantity >= 1) || ('legacyLinesExtracted' in data && data.legacyLinesExtracted == false && data.quantity == 0)) &&
+        isOptionalStr(data.get('dueDate', ''), 32) &&
+        isOptionalStr(data.get('printMethod', ''), 120) &&
+        isOptionalStr(data.get('substrateOrFabric', ''), 160) &&
+        isOptionalStr(data.get('colorSpecs', ''), 160) &&
+        ((data.quantity is number && data.quantity >= 1) || (legacySummary && data.quantity == 0)) &&
         (!('sizeBreakdown' in data) || data.sizeBreakdown is map) &&
-        (!('artworkNotes' in data) || isOptionalStr(data.artworkNotes, 2000)) &&
-        (!('tailoringMeasurements' in data) || isOptionalStr(data.tailoringMeasurements, 2000)) &&
+        isOptionalStr(data.get('artworkNotes', ''), 2000) &&
+        isOptionalStr(data.get('tailoringMeasurements', ''), 2000) &&
         (!('checklist' in data) || data.checklist is map) &&
         data.pricingMode in ['exclusive', 'inclusive'] &&
-        (data.vatTreatment in ['standard', 'zero', 'exempt'] || ('legacyLinesExtracted' in data && data.legacyLinesExtracted == false && data.vatTreatment == 'unknown')) &&
+        (data.vatTreatment in ['standard', 'zero', 'exempt'] || (legacySummary && data.vatTreatment == 'unknown')) &&
         data.vatRate is number && data.vatRate >= 0 && data.vatRate <= 50 &&
-        (!('unitPrice' in data) || isNonNegativeNum(data.unitPrice)) &&
+        isNonNegativeNum(data.get('unitPrice', 0)) &&
         isNonNegativeNum(data.netTotal) &&
         isNonNegativeNum(data.vatAmount) &&
         isNonNegativeNum(data.grossTotal) &&
-        (!('estimatedMaterialCost' in data) || isNonNegativeNum(data.estimatedMaterialCost)) &&
-        (!('estimatedLaborCost' in data) || isNonNegativeNum(data.estimatedLaborCost)) &&
-        (!('estimatedSubcontractCost' in data) || isNonNegativeNum(data.estimatedSubcontractCost)) &&
-        (!('estimatedOverheadCost' in data) || isNonNegativeNum(data.estimatedOverheadCost)) &&
+        isNonNegativeNum(data.get('estimatedMaterialCost', 0)) &&
+        isNonNegativeNum(data.get('estimatedLaborCost', 0)) &&
+        isNonNegativeNum(data.get('estimatedSubcontractCost', 0)) &&
+        isNonNegativeNum(data.get('estimatedOverheadCost', 0)) &&
         isNonNegativeNum(data.actualCostTotal) &&
-        (!('assignedSalesUid' in data) || isOptionalStr(data.assignedSalesUid, 128)) &&
-        (!('assignedSalesName' in data) || isOptionalStr(data.assignedSalesName, 120)) &&
-        (!('assignedProductionName' in data) || isOptionalStr(data.assignedProductionName, 120)) &&
-        (!('commissionRatePct' in data) || (data.commissionRatePct is number && data.commissionRatePct >= 0 && data.commissionRatePct <= 50)) &&
-        (!('commissionBasis' in data) || data.commissionBasis in ['net_sales', 'gross_profit']) &&
-        (!('commissionAmount' in data) || isNonNegativeNum(data.commissionAmount)) &&
-        (!('commissionStatus' in data) || data.commissionStatus in ['Pending', 'Earned', 'Approved', 'Paid']) &&
-        (!('commissionPaidDate' in data) || isOptionalStr(data.commissionPaidDate, 32)) &&
-        (!('legacySourceReference' in data) || isOptionalStr(data.legacySourceReference, 120)) &&
-        (!('legacySourceStatus' in data) || isOptionalStr(data.legacySourceStatus, 80)) &&
-        (!('legacyDivision' in data) || isOptionalStr(data.legacyDivision, 120)) &&
-        (!('legacyPreparedBy' in data) || isOptionalStr(data.legacyPreparedBy, 120)) &&
-        (!('legacySalesOwner' in data) || isOptionalStr(data.legacySalesOwner, 120)) &&
-        (!('legacyValueUSD' in data) || isNonNegativeNum(data.legacyValueUSD)) &&
-        (!('legacyLinesExtracted' in data) || data.legacyLinesExtracted is bool) &&
-        (!('importRunId' in data) || isOptionalStr(data.importRunId, 128)) &&
+        isOptionalStr(data.get('assignedSalesUid', ''), 128) &&
+        isOptionalStr(data.get('assignedSalesName', ''), 120) &&
+        isOptionalStr(data.get('assignedProductionName', ''), 120) &&
+        (isNonNegativeNum(data.get('commissionRatePct', 0)) && data.get('commissionRatePct', 0) <= 50) &&
+        data.get('commissionBasis', 'gross_profit') in ['net_sales', 'gross_profit'] &&
+        isNonNegativeNum(data.get('commissionAmount', 0)) &&
+        data.get('commissionStatus', 'Pending') in ['Pending', 'Earned', 'Approved', 'Paid'] &&
+        isOptionalStr(data.get('commissionPaidDate', ''), 32) &&
+        isOptionalStr(data.get('legacySourceReference', ''), 120) &&
+        isOptionalStr(data.get('legacySourceStatus', ''), 80) &&
+        isOptionalStr(data.get('legacyDivision', ''), 120) &&
+        isOptionalStr(data.get('legacyPreparedBy', ''), 120) &&
+        isOptionalStr(data.get('legacySalesOwner', ''), 120) &&
+        isNonNegativeNum(data.get('legacyValueUSD', 0)) &&
+        data.get('legacyLinesExtracted', true) is bool &&
+        isOptionalStr(data.get('importRunId', ''), 128) &&
         isValidId(data.ownerUid) &&
         isBoundedUidList(data.staffUids) &&
         data.createdAt is timestamp &&
