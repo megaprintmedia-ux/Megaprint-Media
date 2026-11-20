@@ -365,6 +365,10 @@ const ErpWorkspace: React.FC = () => {
                   expenses={erp.expenses}
                   supplierInvoices={erp.supplierInvoices}
                   inventoryItems={erp.inventoryItems}
+                  inventoryMovements={erp.inventoryMovements}
+                  goodsReceipts={erp.goodsReceipts}
+                  payrollRuns={erp.payrollRuns}
+                  cashBookEntries={erp.cashBookEntries}
                   employees={erp.employees}
                   timeEntries={erp.timeEntries}
                   leaveRequests={erp.leaveRequests}
@@ -412,6 +416,7 @@ const ErpWorkspace: React.FC = () => {
                   role={effectiveRole}
                   settings={erp.settings}
                   inventoryItems={erp.inventoryItems}
+                  inventoryMovements={erp.inventoryMovements}
                   jobs={erp.jobs}
                   onCreateInventoryItem={erp.createInventoryItem}
                   onAdjustInventoryStock={erp.adjustInventoryStock}
@@ -481,10 +486,13 @@ const ErpWorkspace: React.FC = () => {
                   suppliers={erp.suppliers}
                   openingBalances={erp.openingBalances}
                   jobs={erp.jobs}
+                  inventoryItems={erp.inventoryItems}
+                  goodsReceipts={erp.goodsReceipts}
                   onCreateSupplier={erp.createSupplier}
                   onCreateSupplierInvoice={erp.createSupplierInvoice}
                   onUpdateSupplierInvoice={erp.updateSupplierInvoice}
                   onRecordSupplierPayment={erp.recordSupplierPayment}
+                  onClassifyAndLinkStockBill={erp.classifyAndLinkStockBill}
                   onUpdateVatStatus={erp.updateSupplierInvoiceVatStatus}
                   onRemitSupplierWht={erp.markSupplierWhtRemitted}
                   onDeleteSupplierInvoice={erp.deleteSupplierInvoice}
@@ -514,6 +522,11 @@ const ErpWorkspace: React.FC = () => {
                   invoices={scopedInvoices}
                   expenses={scopedExpenses}
                   supplierInvoices={scopedSupplierInvoices}
+                  goodsReceipts={erp.goodsReceipts}
+                  inventoryItems={erp.inventoryItems}
+                  inventoryMovements={erp.inventoryMovements}
+                  payrollRuns={erp.payrollRuns}
+                  cashBookEntries={erp.cashBookEntries}
                   openingBalances={erp.openingBalances}
                   jobs={erp.jobs}
                   onCreateExpense={erp.createExpense}
@@ -534,6 +547,10 @@ const ErpWorkspace: React.FC = () => {
                   supplierInvoices={scopedSupplierInvoices}
                   expenses={scopedExpenses}
                   inventoryItems={erp.inventoryItems}
+                  inventoryMovements={erp.inventoryMovements}
+                  goodsReceipts={erp.goodsReceipts}
+                  payrollRuns={erp.payrollRuns}
+                  cashBookEntries={erp.cashBookEntries}
                   timeEntries={erp.timeEntries}
                 />
               )}

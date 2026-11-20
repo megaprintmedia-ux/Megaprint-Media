@@ -161,6 +161,7 @@ export const RequisitionsView: React.FC<RequisitionsViewProps> = ({
   const [postToCashBook, setPostToCashBook] = useState(true);
   const [cashBookAccount, setCashBookAccount] = useState('Petty Cash Float');
   const [cashDisbursedAmount, setCashDisbursedAmount] = useState('0');
+  const [actionError, setActionError] = useState<string | null>(null);
   const [processingAction, setProcessingAction] = useState(false);
 
   const canApproveOrReject = role === 'management' || role === 'accounts';
@@ -280,6 +281,7 @@ export const RequisitionsView: React.FC<RequisitionsViewProps> = ({
 
   const openInspectModal = (req: Requisition) => {
     setSelectedReq(req);
+    setActionError(null);
     setReviewNote(req.fulfillmentNotes || '');
     setLinkedRef(req.linkedRef || '');
     setFulfillNotes(req.fulfillmentNotes || '');
@@ -374,10 +376,15 @@ export const RequisitionsView: React.FC<RequisitionsViewProps> = ({
 
   const handleReview = async (decision: 'Approved' | 'Rejected') => {
     if (!selectedReq) return;
+    setActionError(null);
     setProcessingAction(true);
     try {
       await onReviewRequisition(selectedReq, decision, reviewNote);
       setSelectedReq(null);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'Unable to review requisition.'
+      );
     } finally {
       setProcessingAction(false);
     }
@@ -385,6 +392,7 @@ export const RequisitionsView: React.FC<RequisitionsViewProps> = ({
 
   const handleFulfill = async () => {
     if (!selectedReq) return;
+    setActionError(null);
     setProcessingAction(true);
     try {
       await onFulfillRequisition(selectedReq, {
@@ -396,6 +404,10 @@ export const RequisitionsView: React.FC<RequisitionsViewProps> = ({
         cashDisbursedAmount: Number(cashDisbursedAmount) || selectedReq.totalEstimatedCost,
       });
       setSelectedReq(null);
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : 'Unable to fulfill requisition.'
+      );
     } finally {
       setProcessingAction(false);
     }
@@ -1288,6 +1300,11 @@ export const RequisitionsView: React.FC<RequisitionsViewProps> = ({
                     <div className="font-semibold text-slate-900">
                       Fulfill Approved Requisition
                     </div>
+                    {actionError && (
+                      <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                        {actionError}
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>

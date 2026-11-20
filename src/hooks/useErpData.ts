@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   addDoc,
   collection,
+  collectionGroup,
   deleteDoc,
   doc,
   getDoc,
@@ -90,6 +91,52 @@ import {
   makeDeterministicId,
   normalizePaymentTermsDays,
 } from '../utils/legacyImport';
+import {
+  buildStockClassificationLinkPlan,
+  computeWeightedAverageReceipt,
+  GrnLinkAssignment,
+  LineClassificationEdit,
+  round4,
+  validateAndComputeStockMovement,
+} from '../utils/inventoryAccounting';
+
+function sanitizeSupplierInvoiceLines(
+  lines: InvoiceLine[],
+  isVatClaimable: boolean
+): InvoiceLine[] {
+  return lines.slice(0, 10).map((l) => {
+    const net = Math.max(0, round2(Number(l.netAmount) || 0));
+    const vat = Math.max(0, round2(Number(l.vatAmount) || 0));
+    const gross = Math.max(0, round2(Number(l.grossAmount) || net + vat));
+    const treatment: 'stock' | 'expense' =
+      l.costTreatment || (l.inventoryItemId ? 'stock' : 'expense');
+    const cleaned: InvoiceLine = {
+      description: trimStr(l.description, 200) || 'Line Item',
+      quantity: Math.max(0.01, round4(Number(l.quantity) || 1)),
+      unitPrice: Math.max(0, round4(Number(l.unitPrice) || 0)),
+      vatTreatment: l.vatTreatment || 'standard',
+      netAmount: net,
+      vatAmount: vat,
+      grossAmount: gross,
+      costTreatment: treatment,
+    };
+    if (treatment === 'stock') {
+      if (l.inventoryItemId) cleaned.inventoryItemId = trimStr(l.inventoryItemId, 128);
+      if (l.sku) cleaned.sku = trimStr(l.sku, 40);
+      if (l.unit) cleaned.unit = trimStr(l.unit, 32);
+      if (l.grnLineRef) cleaned.grnLineRef = trimStr(l.grnLineRef, 128);
+      cleaned.capitalizedCost =
+        cleaned.vatTreatment === 'standard' && isVatClaimable
+          ? net
+          : vat > 0
+            ? round2(net + vat)
+            : gross;
+    } else {
+      cleaned.capitalizedCost = 0;
+    }
+    return cleaned;
+  });
+}
 
 function mapMethodToCashAccount(
   method: string,
@@ -182,6 +229,7 @@ export function useErpData() {
   const [notes, setNotes] = useState<OperationalNote[]>([]);
   const [supplierInvoices, setSupplierInvoices] = useState<SupplierInvoice[]>([]);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+  const [inventoryMovements, setInventoryMovements] = useState<InventoryMovement[]>([]);
   const [goodsReceipts, setGoodsReceipts] = useState<GoodsReceipt[]>([]);
   const [requisitions, setRequisitions] = useState<Requisition[]>([]);
   const [cashBookEntries, setCashBookEntries] = useState<CashBookEntry[]>([]);
@@ -251,6 +299,7 @@ export function useErpData() {
       setLeaveRequests([]);
       setNotes([]);
       setInventoryItems([]);
+      setInventoryMovements([]);
       setGoodsReceipts([]);
       setRequisitions([]);
       setChartOfAccounts([]);
@@ -442,6 +491,33 @@ export function useErpData() {
           );
         },
         (err) => handleFirestoreError(err, OperationType.LIST, 'inventoryItems')
+      )
+    );
+
+    // Global Inventory Movements (CollectionGroup for consumption COGS, return caps, and audit)
+    const movementsGroupQuery = isBootAdmin
+      ? query(collectionGroup(db, 'movements'))
+      : query(
+          collectionGroup(db, 'movements'),
+          where('staffUids', 'array-contains', user.uid)
+        );
+    unsubs.push(
+      onSnapshot(
+        movementsGroupQuery,
+        (snap) => {
+          const list = snap.docs
+            .map((d) => ({
+              id: d.id,
+              ...(d.data() as Omit<InventoryMovement, 'id'>),
+            }))
+            .sort(
+              (a, b) =>
+                getCreatedMillis(b.createdAt) - getCreatedMillis(a.createdAt) ||
+                (b.movementDate || '').localeCompare(a.movementDate || '')
+            );
+          setInventoryMovements(list);
+        },
+        (err) => handleFirestoreError(err, OperationType.LIST, 'inventoryItems/movements')
       )
     );
 
@@ -1211,9 +1287,10 @@ export function useErpData() {
       costType: params.costType,
       description: trimStr(params.description, 240),
       quantity: Math.max(0.01, Number(params.quantity) || 1),
-      unitCost: Math.max(0, round2(params.unitCost)),
+      unitCost: Math.max(0, round4(params.unitCost)),
       totalCost: Math.max(0, totalCost),
       loggedByName: trimStr(profile.displayName, 120) || 'Staff',
+      sourceType: 'manual',
       ownerUid: user.uid,
       staffUids: activeStaffUids,
       createdAt: serverTimestamp(),
@@ -1906,7 +1983,8 @@ export function useErpData() {
     input: Omit<SupplierInvoice, 'id' | 'ownerUid' | 'viewerUids' | 'createdAt' | 'updatedAt'>
   ) => {
     if (!user) return;
-    const boundedLines = input.lines.slice(0, 10);
+    const cleanClaimable = Boolean(input.isVatClaimable);
+    const boundedLines = sanitizeSupplierInvoiceLines(input.lines, cleanClaimable);
     const taxSummary = summarizeTaxBreakdown(boundedLines, {
       vatTreatment: input.vatTreatment,
       netAmount: input.netAmount,
@@ -1917,7 +1995,6 @@ export function useErpData() {
     const cleanTin = trimStr(input.supplierTin, 64);
     const cleanVatReg = trimStr(input.supplierVatReg, 64);
     const cleanVatAmount = Math.max(0, round2(input.vatAmount));
-    const cleanClaimable = Boolean(input.isVatClaimable);
     const isVatReportable = computeSupplierInvoiceVatReportable({
       isVatClaimable: cleanClaimable,
       vatAmount: cleanVatAmount,
@@ -1965,6 +2042,7 @@ export function useErpData() {
         status: input.status,
         paymentMethod: trimStr(input.paymentMethod, 60),
         paymentReference: trimStr(input.paymentReference, 120),
+        ...(input.lastPaymentDate ? { lastPaymentDate: trimStr(input.lastPaymentDate, 32) } : {}),
         notes: trimStr(input.notes, 1000),
         ownerUid: user.uid,
         viewerUids: hrViewerUids,
@@ -2010,7 +2088,8 @@ export function useErpData() {
       notes?: string;
     }
   ) => {
-    const boundedLines = input.lines.slice(0, 10);
+    const provisionallyClaimable = Boolean(input.isVatClaimable);
+    const boundedLines = sanitizeSupplierInvoiceLines(input.lines, provisionallyClaimable);
     if (boundedLines.length === 0) return;
     const taxSummary = summarizeTaxBreakdown(boundedLines, {
       vatTreatment: input.vatTreatment,
@@ -2024,6 +2103,7 @@ export function useErpData() {
     const cleanPaid = Math.max(0, Math.min(taxSummary.grossAmount, round2(input.amountPaid)));
     const balanceDue = round2(Math.max(0, taxSummary.grossAmount - cleanPaid));
     const cleanClaimable = Boolean(input.isVatClaimable && taxSummary.vatAmount > 0);
+    const finalLines = sanitizeSupplierInvoiceLines(boundedLines, cleanClaimable);
     const isVatReportable = computeSupplierInvoiceVatReportable({
       isVatClaimable: cleanClaimable,
       vatAmount: taxSummary.vatAmount,
@@ -2051,7 +2131,7 @@ export function useErpData() {
         vatTreatment: input.vatTreatment,
         isVatClaimable: cleanClaimable,
         vatRate: Math.max(0, Math.min(50, Number(input.vatRate) || 0)),
-        lines: boundedLines,
+        lines: finalLines,
         standardNetAmount: taxSummary.standardNetAmount,
         zeroRatedAmount: taxSummary.zeroRatedAmount,
         exemptAmount: taxSummary.exemptAmount,
@@ -2090,6 +2170,7 @@ export function useErpData() {
     options?: {
       whtDeducted?: number;
       whtRemitted?: boolean;
+      paymentDate?: string;
     }
   ) => {
     const cleanPay = Math.max(0, round2(paymentAmount));
@@ -2097,6 +2178,8 @@ export function useErpData() {
     const totalSettled = round2(cleanPay + cleanWht);
     if (totalSettled <= 0) return;
 
+    const paymentDate =
+      trimStr(options?.paymentDate, 32) || new Date().toISOString().slice(0, 10);
     const newPaid = round2(
       Math.min(supplierInvoice.grossAmount, supplierInvoice.amountPaid + totalSettled)
     );
@@ -2111,6 +2194,7 @@ export function useErpData() {
         status: nextStatus,
         paymentMethod: trimStr(method, 60),
         paymentReference: trimStr(reference, 120),
+        lastPaymentDate: paymentDate,
         updatedAt: serverTimestamp(),
       };
       if (cleanWht > 0) {
@@ -2128,10 +2212,10 @@ export function useErpData() {
       if (user && profile && isAccountsOrMgmt && cleanPay > 0) {
         const cbRef = doc(collection(db, 'cashBookEntries'));
         batch.set(cbRef, {
-          entryNumber: `CB-${new Date().getFullYear()}-${String(
+          entryNumber: `CB-${paymentDate.slice(0, 4)}-${String(
             1 + cashBookEntries.length
           ).padStart(3, '0')}`,
-          entryDate: new Date().toISOString().slice(0, 10),
+          entryDate: paymentDate,
           entryType: 'Payment (Outflow)',
           account: mapMethodToCashAccount(method, cashBookAccount),
           counterparty: trimStr(supplierInvoice.supplierName, 160) || 'Supplier',
@@ -2163,6 +2247,101 @@ export function useErpData() {
         OperationType.UPDATE,
         `supplierInvoices/${supplierInvoice.id}`
       );
+    }
+  };
+
+  /**
+   * Safe Management-only workflow to classify existing bill lines as Stock vs Direct Expense
+   * and link accepted GRNs without altering amounts, VAT, cash payments, or stock quantities.
+   */
+  const classifyAndLinkStockBill = async (params: {
+    supplierInvoice: SupplierInvoice;
+    lineEdits: LineClassificationEdit[];
+    selectedGrnIds: string[];
+    grnAssignments?: GrnLinkAssignment[];
+  }) => {
+    if (!user || !profile || !isManagement) {
+      throw new Error('Only Management accounts can classify or link existing supplier bills to GRNs.');
+    }
+
+    const plan = buildStockClassificationLinkPlan({
+      supplierInvoice: params.supplierInvoice,
+      lineEdits: params.lineEdits,
+      selectedGrnIds: params.selectedGrnIds,
+      grnAssignments: params.grnAssignments,
+      allGrns: goodsReceipts,
+      inventoryItems,
+    });
+
+    if (!plan.valid) {
+      throw new Error(plan.errors.join(' '));
+    }
+    if (!plan.hasChanges) {
+      return { changed: false, plan };
+    }
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    const auditNote = trimStr(
+      `Classified & linked by ${profile.displayName || 'Management'} on ${stamp}: Stock $${plan.stockCapitalizedTotal.toFixed(
+        2
+      )}, Direct Expense $${plan.directExpenseTotal.toFixed(2)} (${plan.linkedGrnIds.length} GRN${
+        plan.linkedGrnIds.length === 1 ? '' : 's'
+      })`,
+      500
+    );
+
+    try {
+      const batch = writeBatch(db);
+      const cleanLines = sanitizeSupplierInvoiceLines(
+        plan.updatedLines,
+        params.supplierInvoice.isVatClaimable
+      );
+      batch.update(doc(db, 'supplierInvoices', params.supplierInvoice.id), {
+        lines: cleanLines,
+        linkedGrnIds: plan.linkedGrnIds.slice(0, 20),
+        stockClassificationAudit: auditNote,
+        updatedAt: serverTimestamp(),
+      });
+
+      for (const gu of plan.grnUpdates) {
+        const cleanGrnItems = gu.items.map((gi) => {
+          const base: GoodsReceiptLine = {
+            inventoryItemId: trimStr(gi.inventoryItemId, 128),
+            sku: trimStr(gi.sku, 40),
+            description: trimStr(gi.description, 200) || 'Delivered Item',
+            quantityOrdered: Math.max(0, round4(Number(gi.quantityOrdered) || 0)),
+            quantityReceived: Math.max(0, round4(Number(gi.quantityReceived) || 0)),
+            unit: trimStr(gi.unit, 32) || 'Pcs',
+            unitCost: Math.max(0, round4(Number(gi.unitCost) || 0)),
+          };
+          if (gi.supplierInvoiceLineIndex !== undefined) {
+            base.supplierInvoiceLineIndex = gi.supplierInvoiceLineIndex;
+          }
+          return base;
+        });
+        batch.update(doc(db, 'goodsReceipts', gu.grnId), {
+          supplierInvoiceId: trimStr(gu.supplierInvoiceId, 128),
+          supplierInvoiceNo: trimStr(gu.supplierInvoiceNo, 80),
+          items: cleanGrnItems,
+          stockLinkAudit: trimStr(
+            `Linked to ${gu.supplierInvoiceNo || gu.supplierInvoiceId} by ${
+              profile.displayName || 'Management'
+            } on ${stamp}`,
+            500
+          ),
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+      return { changed: true, plan };
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `supplierInvoices/${params.supplierInvoice.id}`
+      );
+      throw error;
     }
   };
 
@@ -2301,20 +2480,24 @@ export function useErpData() {
     >
   ) => {
     if (!user || !profile) return;
-    const qty = Math.max(0, round2(input.quantityOnHand));
-    const reorder = Math.max(0, round2(input.reorderLevel));
+    const qty = Math.max(0, round4(input.quantityOnHand));
+    const unitCost = Math.max(0, round4(input.unitCost));
+    const reorder = Math.max(0, round4(input.reorderLevel));
     const status = deriveStockStatus(qty, reorder);
+    const today = new Date().toISOString().slice(0, 10);
+    const cleanSku = trimStr(input.sku, 40);
+    const cleanName = trimStr(input.name, 160);
     try {
       const batch = writeBatch(db);
       const itemRef = doc(collection(db, 'inventoryItems'));
       batch.set(itemRef, {
-        sku: trimStr(input.sku, 40),
-        name: trimStr(input.name, 160),
+        sku: cleanSku,
+        name: cleanName,
         itemType: input.itemType,
         unit: trimStr(input.unit, 32) || 'Pcs',
         quantityOnHand: qty,
         reorderLevel: reorder,
-        unitCost: Math.max(0, round2(input.unitCost)),
+        unitCost,
         location: trimStr(input.location, 120),
         supplierName: trimStr(input.supplierName, 160),
         sampleClientOrSpec: trimStr(input.sampleClientOrSpec, 240),
@@ -2329,9 +2512,15 @@ export function useErpData() {
         const movRef = doc(collection(db, `inventoryItems/${itemRef.id}/movements`));
         batch.set(movRef, {
           itemId: itemRef.id,
+          sku: cleanSku,
+          itemName: cleanName,
           movementType: 'Stock In',
           quantityDelta: qty,
+          movedQuantity: qty,
           resultingQty: qty,
+          unitCost,
+          totalCost: round2(qty * unitCost),
+          movementDate: today,
           jobId: '',
           jobNumber: '',
           recipientOrReason: 'Opening stock balance',
@@ -2352,31 +2541,81 @@ export function useErpData() {
     item: InventoryItem;
     movementType: InventoryMovementType;
     quantityChange: number;
+    unitCostOverride?: number;
+    movementDate?: string;
     jobId?: string;
     jobNumber?: string;
+    targetLocation?: string;
+    reversedMovementId?: string;
     recipientOrReason: string;
     sampleClientOrSpec?: string;
   }) => {
     if (!user || !profile) return;
-    const isDeduction =
-      params.movementType === 'Issue to Job' ||
-      params.movementType === 'Sample Out';
-    const rawDelta =
-      isDeduction
-        ? -Math.abs(params.quantityChange)
-        : params.movementType === 'Adjustment'
-          ? params.quantityChange
-          : Math.abs(params.quantityChange);
-    const nextQty = Math.max(0, round2(params.item.quantityOnHand + rawDelta));
-    const actualDelta = round2(nextQty - params.item.quantityOnHand);
-    if (actualDelta === 0) return;
+    const movDate =
+      trimStr(params.movementDate, 32) || new Date().toISOString().slice(0, 10);
 
-    const nextStatus = deriveStockStatus(nextQty, params.item.reorderLevel);
+    let quantityDelta = 0;
+    let movedQuantity = 0;
+    let resultingQty = params.item.quantityOnHand;
+    let movementUnitCost = round4(Math.max(0, Number(params.item.unitCost) || 0));
+    let movementTotalCost = 0;
+    let newItemUnitCost = movementUnitCost;
+    let newLocation = params.item.location || '';
+    let shouldPostJobCost = false;
+    let jobCostSourceType: 'stock_issue' | 'stock_return' | undefined;
+    let jobCostDelta = 0;
+
+    if (params.movementType === 'Adjustment') {
+      const rawDelta = Number(params.quantityChange);
+      if (!Number.isFinite(rawDelta) || rawDelta === 0) {
+        throw new Error('Adjustment quantity must be a non-zero number.');
+      }
+      const next = round4(params.item.quantityOnHand + rawDelta);
+      if (next < -0.0001) {
+        throw new Error(
+          `Adjustment of ${rawDelta} would make ${params.item.sku} negative (available ${params.item.quantityOnHand}).`
+        );
+      }
+      quantityDelta = round4(rawDelta);
+      movedQuantity = round4(Math.abs(rawDelta));
+      resultingQty = Math.max(0, next);
+      movementTotalCost = round2(movedQuantity * movementUnitCost);
+    } else {
+      const reversedMovement = params.reversedMovementId
+        ? inventoryMovements.find((m) => m.id === params.reversedMovementId)
+        : undefined;
+      const computed = validateAndComputeStockMovement({
+        item: params.item,
+        movementType: params.movementType,
+        quantity: Math.abs(Number(params.quantityChange) || 0),
+        unitCostOverride: params.unitCostOverride,
+        jobId: trimStr(params.jobId, 128),
+        targetLocation: params.targetLocation,
+        existingMovements: inventoryMovements,
+        reversedMovement,
+      });
+      quantityDelta = computed.quantityDelta;
+      movedQuantity = computed.movedQuantity;
+      resultingQty = computed.resultingQty;
+      movementUnitCost = computed.unitCost;
+      movementTotalCost = computed.totalCost;
+      newItemUnitCost = computed.newItemUnitCost;
+      newLocation = computed.newLocation;
+      shouldPostJobCost = computed.shouldPostJobCost;
+      jobCostSourceType = computed.jobCostSourceType;
+      jobCostDelta = computed.jobCostDelta;
+    }
+
+    const nextStatus = deriveStockStatus(resultingQty, params.item.reorderLevel);
     const itemUpdates: Record<string, unknown> = {
-      quantityOnHand: nextQty,
+      quantityOnHand: resultingQty,
+      unitCost: newItemUnitCost,
       status: nextStatus,
       updatedAt: serverTimestamp(),
     };
+    if (params.movementType === 'Location Transfer' && newLocation) {
+      itemUpdates.location = trimStr(newLocation, 120);
+    }
     if (params.sampleClientOrSpec !== undefined) {
       itemUpdates.sampleClientOrSpec = trimStr(params.sampleClientOrSpec, 240);
     }
@@ -2384,11 +2623,17 @@ export function useErpData() {
     try {
       const batch = writeBatch(db);
       const movRef = doc(collection(db, `inventoryItems/${params.item.id}/movements`));
-      batch.set(movRef, {
+      const movDoc: Record<string, unknown> = {
         itemId: params.item.id,
+        sku: trimStr(params.item.sku, 40),
+        itemName: trimStr(params.item.name, 160),
         movementType: params.movementType,
-        quantityDelta: actualDelta,
-        resultingQty: nextQty,
+        quantityDelta,
+        movedQuantity,
+        resultingQty,
+        unitCost: movementUnitCost,
+        totalCost: movementTotalCost,
+        movementDate: movDate,
         jobId: trimStr(params.jobId, 128),
         jobNumber: trimStr(params.jobNumber, 40),
         recipientOrReason:
@@ -2397,8 +2642,59 @@ export function useErpData() {
         ownerUid: user.uid,
         staffUids: activeStaffUids,
         createdAt: serverTimestamp(),
-      });
+      };
+      if (params.movementType === 'Location Transfer') {
+        movDoc.locationFrom = trimStr(params.item.location, 120);
+        movDoc.locationTo = trimStr(newLocation, 120);
+      }
+      if (params.reversedMovementId) {
+        movDoc.reversedMovementId = trimStr(params.reversedMovementId, 128);
+      }
+      batch.set(movRef, movDoc);
       batch.update(doc(db, 'inventoryItems', params.item.id), itemUpdates);
+
+      // Post costed issue or return directly onto the Job Card in the same atomic batch (no double charging)
+      const cleanJobId = trimStr(params.jobId, 128);
+      if (shouldPostJobCost && cleanJobId && jobCostSourceType) {
+        const targetJob = jobs.find((j) => j.id === cleanJobId);
+        const canUpdateJobDoc =
+          targetJob &&
+          targetJob.status !== 'Cancelled' &&
+          (isManagement ||
+            isAccountsOrMgmt ||
+            (profile.role === 'production' && targetJob.status !== 'Completed'));
+        if (targetJob && canUpdateJobDoc) {
+          const costRef = doc(collection(db, `jobs/${targetJob.id}/costs`));
+          batch.set(costRef, {
+            jobId: targetJob.id,
+            costType: 'Material',
+            description: trimStr(
+              jobCostSourceType === 'stock_return'
+                ? `Stock Return: ${params.item.sku} ${params.item.name}`
+                : `Stock Issue: ${params.item.sku} ${params.item.name}`,
+              240
+            ),
+            quantity: Math.max(0.01, movedQuantity),
+            unitCost: movementUnitCost,
+            totalCost: movementTotalCost,
+            loggedByName: trimStr(profile.displayName, 120) || 'Stores',
+            inventoryItemId: params.item.id,
+            inventoryMovementId: movRef.id,
+            sourceType: jobCostSourceType,
+            ownerUid: user.uid,
+            staffUids: activeStaffUids,
+            createdAt: serverTimestamp(),
+          });
+          batch.update(doc(db, 'jobs', targetJob.id), {
+            actualCostTotal: Math.max(
+              0,
+              round2((targetJob.actualCostTotal || 0) + jobCostDelta)
+            ),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+
       await batch.commit();
     } catch (error) {
       handleFirestoreError(
@@ -2406,6 +2702,7 @@ export function useErpData() {
         OperationType.WRITE,
         `inventoryItems/${params.item.id}/movements`
       );
+      throw error;
     }
   };
 
@@ -2459,15 +2756,24 @@ export function useErpData() {
     >
   ) => {
     if (!user || !profile) return;
-    const cleanItems: GoodsReceiptLine[] = input.items.slice(0, 10).map((line) => ({
-      inventoryItemId: trimStr(line.inventoryItemId, 128),
-      sku: trimStr(line.sku, 40),
-      description: trimStr(line.description, 200) || 'Delivered Item',
-      quantityOrdered: Math.max(0, round2(Number(line.quantityOrdered) || 0)),
-      quantityReceived: Math.max(0, round2(Number(line.quantityReceived) || 0)),
-      unit: trimStr(line.unit, 32) || 'Pcs',
-      unitCost: Math.max(0, round2(Number(line.unitCost) || 0)),
-    }));
+    const cleanItems: GoodsReceiptLine[] = input.items.slice(0, 10).map((line) => {
+      const cleaned: GoodsReceiptLine = {
+        inventoryItemId: trimStr(line.inventoryItemId, 128),
+        sku: trimStr(line.sku, 40),
+        description: trimStr(line.description, 200) || 'Delivered Item',
+        quantityOrdered: Math.max(0, round4(Number(line.quantityOrdered) || 0)),
+        quantityReceived: Math.max(0, round4(Number(line.quantityReceived) || 0)),
+        unit: trimStr(line.unit, 32) || 'Pcs',
+        unitCost: Math.max(0, round4(Number(line.unitCost) || 0)),
+      };
+      if (line.supplierInvoiceLineIndex !== undefined) {
+        cleaned.supplierInvoiceLineIndex = Math.max(
+          0,
+          Math.floor(Number(line.supplierInvoiceLineIndex) || 0)
+        );
+      }
+      return cleaned;
+    });
     if (cleanItems.length === 0) return;
 
     const totalValue = round2(
@@ -2478,6 +2784,8 @@ export function useErpData() {
     );
     const grnNumber = trimStr(input.grnNumber, 40);
     const supplierName = trimStr(input.supplierName, 160);
+    const receivedDate =
+      trimStr(input.receivedDate, 32) || new Date().toISOString().slice(0, 10);
     const shouldPostStock =
       Boolean(input.postToInventory) &&
       input.conditionStatus !== 'Damaged / Rejected';
@@ -2493,7 +2801,7 @@ export function useErpData() {
         supplierInvoiceNo: trimStr(input.supplierInvoiceNo, 80),
         jobId: trimStr(input.jobId, 128),
         jobNumber: trimStr(input.jobNumber, 40),
-        receivedDate: trimStr(input.receivedDate, 32),
+        receivedDate,
         receivedByName:
           trimStr(input.receivedByName, 120) ||
           trimStr(profile.displayName, 120) ||
@@ -2510,32 +2818,68 @@ export function useErpData() {
       });
 
       if (shouldPostStock) {
-        const qtyByItemId = new Map<string, number>();
+        // Compute moving weighted-average stock receipt per SKU (supports multiple lines per SKU safely)
+        const stateByItemId = new Map<
+          string,
+          { qty: number; unitCost: number; totalIncomingQty: number; totalIncomingValue: number }
+        >();
+
         cleanItems.forEach((line) => {
-          if (line.inventoryItemId && line.quantityReceived > 0) {
-            qtyByItemId.set(
-              line.inventoryItemId,
-              round2((qtyByItemId.get(line.inventoryItemId) || 0) + line.quantityReceived)
-            );
-          }
+          if (!line.inventoryItemId || line.quantityReceived <= 0) return;
+          const item = inventoryItems.find((i) => i.id === line.inventoryItemId);
+          if (!item) return;
+
+          const cur = stateByItemId.get(item.id) || {
+            qty: item.quantityOnHand,
+            unitCost: item.unitCost,
+            totalIncomingQty: 0,
+            totalIncomingValue: 0,
+          };
+          const lineCost = line.unitCost > 0 ? line.unitCost : cur.unitCost;
+          const weighted = computeWeightedAverageReceipt({
+            existingQty: cur.qty,
+            existingUnitCost: cur.unitCost,
+            incomingQty: line.quantityReceived,
+            incomingUnitCost: lineCost,
+          });
+          stateByItemId.set(item.id, {
+            qty: weighted.newQty,
+            unitCost: weighted.newUnitCost,
+            totalIncomingQty: round4(cur.totalIncomingQty + line.quantityReceived),
+            totalIncomingValue: round2(
+              cur.totalIncomingValue + weighted.incomingTotalCost
+            ),
+          });
         });
 
-        qtyByItemId.forEach((delta, itemId) => {
+        stateByItemId.forEach((st, itemId) => {
           const item = inventoryItems.find((i) => i.id === itemId);
-          if (!item || delta <= 0) return;
-          const nextQty = round2(item.quantityOnHand + delta);
-          const nextStatus = deriveStockStatus(nextQty, item.reorderLevel);
+          if (!item || st.totalIncomingQty <= 0) return;
+          const nextStatus = deriveStockStatus(st.qty, item.reorderLevel);
           batch.update(doc(db, 'inventoryItems', item.id), {
-            quantityOnHand: nextQty,
+            quantityOnHand: st.qty,
+            unitCost: st.unitCost,
             status: nextStatus,
             updatedAt: serverTimestamp(),
           });
           const movRef = doc(collection(db, `inventoryItems/${item.id}/movements`));
+          const movUnitCost =
+            st.totalIncomingQty > 0
+              ? round4(st.totalIncomingValue / st.totalIncomingQty)
+              : st.unitCost;
           batch.set(movRef, {
             itemId: item.id,
+            sku: trimStr(item.sku, 40),
+            itemName: trimStr(item.name, 160),
             movementType: 'Stock In',
-            quantityDelta: delta,
-            resultingQty: nextQty,
+            quantityDelta: st.totalIncomingQty,
+            movedQuantity: st.totalIncomingQty,
+            resultingQty: st.qty,
+            unitCost: movUnitCost,
+            totalCost: st.totalIncomingValue,
+            movementDate: receivedDate,
+            supplierInvoiceId: trimStr(input.supplierInvoiceId, 128),
+            grnId: grnRef.id,
             jobId: trimStr(input.jobId, 128),
             jobNumber: trimStr(input.jobNumber, 40),
             recipientOrReason: trimStr(
@@ -2601,15 +2945,24 @@ export function useErpData() {
       if (updates.items !== undefined && updates.items.length > 0) {
         const cleanItems: GoodsReceiptLine[] = updates.items
           .slice(0, 10)
-          .map((line) => ({
-            inventoryItemId: trimStr(line.inventoryItemId, 128),
-            sku: trimStr(line.sku, 40),
-            description: trimStr(line.description, 200) || 'Delivered Item',
-            quantityOrdered: Math.max(0, round2(Number(line.quantityOrdered) || 0)),
-            quantityReceived: Math.max(0, round2(Number(line.quantityReceived) || 0)),
-            unit: trimStr(line.unit, 32) || 'Pcs',
-            unitCost: Math.max(0, round2(Number(line.unitCost) || 0)),
-          }));
+          .map((line) => {
+            const base: GoodsReceiptLine = {
+              inventoryItemId: trimStr(line.inventoryItemId, 128),
+              sku: trimStr(line.sku, 40),
+              description: trimStr(line.description, 200) || 'Delivered Item',
+              quantityOrdered: Math.max(0, round4(Number(line.quantityOrdered) || 0)),
+              quantityReceived: Math.max(0, round4(Number(line.quantityReceived) || 0)),
+              unit: trimStr(line.unit, 32) || 'Pcs',
+              unitCost: Math.max(0, round4(Number(line.unitCost) || 0)),
+            };
+            if (line.supplierInvoiceLineIndex !== undefined) {
+              base.supplierInvoiceLineIndex = Math.max(
+                0,
+                Math.floor(Number(line.supplierInvoiceLineIndex) || 0)
+              );
+            }
+            return base;
+          });
         clean.items = cleanItems;
         clean.totalValue = round2(
           cleanItems.reduce(
@@ -2792,6 +3145,38 @@ export function useErpData() {
     }
   ) => {
     if (!user || !profile) return;
+    // Pre-validate all inventory issue quantities BEFORE starting the batch
+    const issueDate = new Date().toISOString().slice(0, 10);
+    const preparedIssues: Array<{
+      item: InventoryItem;
+      computed: ReturnType<typeof validateAndComputeStockMovement>;
+    }> = [];
+    if (
+      options?.issueFromInventory &&
+      req.requisitionType === 'Stock / Material Issue'
+    ) {
+      const qtyByItemId = new Map<string, number>();
+      req.lines.forEach((line) => {
+        if (line.inventoryItemId && line.quantity > 0) {
+          qtyByItemId.set(
+            line.inventoryItemId,
+            round4((qtyByItemId.get(line.inventoryItemId) || 0) + line.quantity)
+          );
+        }
+      });
+      qtyByItemId.forEach((issueQty, itemId) => {
+        const item = inventoryItems.find((i) => i.id === itemId);
+        if (!item || issueQty <= 0) return;
+        const computed = validateAndComputeStockMovement({
+          item,
+          movementType: 'Issue to Job',
+          quantity: issueQty,
+          jobId: trimStr(req.jobId, 128),
+        });
+        preparedIssues.push({ item, computed });
+      });
+    }
+
     try {
       const batch = writeBatch(db);
       batch.update(doc(db, 'requisitions', req.id), {
@@ -2801,36 +3186,35 @@ export function useErpData() {
         updatedAt: serverTimestamp(),
       });
 
-      if (
-        options?.issueFromInventory &&
-        req.requisitionType === 'Stock / Material Issue'
-      ) {
-        const qtyByItemId = new Map<string, number>();
-        req.lines.forEach((line) => {
-          if (line.inventoryItemId && line.quantity > 0) {
-            qtyByItemId.set(
-              line.inventoryItemId,
-              round2((qtyByItemId.get(line.inventoryItemId) || 0) + line.quantity)
-            );
-          }
-        });
-        qtyByItemId.forEach((issueQty, itemId) => {
-          const item = inventoryItems.find((i) => i.id === itemId);
-          if (!item || issueQty <= 0) return;
-          const nextQty = Math.max(0, round2(item.quantityOnHand - issueQty));
-          const actualDelta = round2(nextQty - item.quantityOnHand);
-          if (actualDelta === 0) return;
+      if (preparedIssues.length > 0) {
+        let addedJobCost = 0;
+        const targetJob = req.jobId ? jobs.find((j) => j.id === req.jobId) : undefined;
+        const canUpdateJobDoc = Boolean(
+          targetJob &&
+            targetJob.status !== 'Cancelled' &&
+            (isManagement ||
+              isAccountsOrMgmt ||
+              (profile.role === 'production' && targetJob.status !== 'Completed'))
+        );
+
+        for (const { item, computed } of preparedIssues) {
           batch.update(doc(db, 'inventoryItems', item.id), {
-            quantityOnHand: nextQty,
-            status: deriveStockStatus(nextQty, item.reorderLevel),
+            quantityOnHand: computed.resultingQty,
+            status: deriveStockStatus(computed.resultingQty, item.reorderLevel),
             updatedAt: serverTimestamp(),
           });
           const movRef = doc(collection(db, `inventoryItems/${item.id}/movements`));
           batch.set(movRef, {
             itemId: item.id,
+            sku: trimStr(item.sku, 40),
+            itemName: trimStr(item.name, 160),
             movementType: 'Issue to Job',
-            quantityDelta: actualDelta,
-            resultingQty: nextQty,
+            quantityDelta: computed.quantityDelta,
+            movedQuantity: computed.movedQuantity,
+            resultingQty: computed.resultingQty,
+            unitCost: computed.unitCost,
+            totalCost: computed.totalCost,
+            movementDate: issueDate,
             jobId: trimStr(req.jobId, 128),
             jobNumber: trimStr(req.jobNumber, 40),
             recipientOrReason: trimStr(
@@ -2842,7 +3226,40 @@ export function useErpData() {
             staffUids: activeStaffUids,
             createdAt: serverTimestamp(),
           });
-        });
+
+          if (computed.shouldPostJobCost && targetJob && canUpdateJobDoc) {
+            const costRef = doc(collection(db, `jobs/${targetJob.id}/costs`));
+            batch.set(costRef, {
+              jobId: targetJob.id,
+              costType: 'Material',
+              description: trimStr(
+                `Stock Issue (${req.requisitionNumber}): ${item.sku} ${item.name}`,
+                240
+              ),
+              quantity: Math.max(0.01, computed.movedQuantity),
+              unitCost: computed.unitCost,
+              totalCost: computed.totalCost,
+              loggedByName: trimStr(profile.displayName, 120) || 'Stores',
+              inventoryItemId: item.id,
+              inventoryMovementId: movRef.id,
+              sourceType: 'stock_issue',
+              ownerUid: user.uid,
+              staffUids: activeStaffUids,
+              createdAt: serverTimestamp(),
+            });
+            addedJobCost = round2(addedJobCost + computed.totalCost);
+          }
+        }
+
+        if (addedJobCost > 0 && targetJob && canUpdateJobDoc) {
+          batch.update(doc(db, 'jobs', targetJob.id), {
+            actualCostTotal: Math.max(
+              0,
+              round2((targetJob.actualCostTotal || 0) + addedJobCost)
+            ),
+            updatedAt: serverTimestamp(),
+          });
+        }
       }
 
       if (
@@ -5650,6 +6067,7 @@ export function useErpData() {
     expenses,
     supplierInvoices,
     inventoryItems,
+    inventoryMovements,
     goodsReceipts,
     requisitions,
     cashBookEntries,
@@ -5697,6 +6115,7 @@ export function useErpData() {
     createSupplierInvoice,
     updateSupplierInvoice,
     recordSupplierPayment,
+    classifyAndLinkStockBill,
     markSupplierWhtRemitted,
     updateSupplierInvoiceVatStatus,
     deleteSupplierInvoice,

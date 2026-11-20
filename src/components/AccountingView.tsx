@@ -1,12 +1,17 @@
 import React, { useMemo, useState } from 'react';
 import { Download, Pencil, Plus, Trash2, X } from 'lucide-react';
 import {
+  CashBookEntry,
   CompanySettings,
   Expense,
   ExpenseCategory,
+  GoodsReceipt,
+  InventoryItem,
+  InventoryMovement,
   Invoice,
   Job,
   OpeningBalanceRecord,
+  PayrollRun,
   PricingMode,
   SupplierInvoice,
   TaxAccessScope,
@@ -21,6 +26,11 @@ import {
   round2,
   summarizeTaxBreakdown,
 } from '../utils/vat';
+import {
+  classifySupplierInvoiceLines,
+  COGS_SUPPLIER_CATEGORIES,
+  computeAccountingLedger,
+} from '../utils/inventoryAccounting';
 import { StatusText } from './StatusText';
 
 interface AccountingViewProps {
@@ -30,6 +40,11 @@ interface AccountingViewProps {
   invoices: Invoice[];
   expenses: Expense[];
   supplierInvoices: SupplierInvoice[];
+  goodsReceipts?: GoodsReceipt[];
+  inventoryItems?: InventoryItem[];
+  inventoryMovements?: InventoryMovement[];
+  payrollRuns?: PayrollRun[];
+  cashBookEntries?: CashBookEntry[];
   openingBalances?: OpeningBalanceRecord[];
   jobs: Job[];
   onCreateExpense: (
@@ -87,6 +102,11 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   invoices,
   expenses,
   supplierInvoices,
+  goodsReceipts = [],
+  inventoryItems = [],
+  inventoryMovements = [],
+  payrollRuns = [],
+  cashBookEntries = [],
   openingBalances = [],
   jobs,
   onCreateExpense,
@@ -177,10 +197,17 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
     const validInvoices = invoices.filter(
       (i) => i.status !== 'Void' && i.status !== 'Draft'
     );
-    const salesNet = round2(validInvoices.reduce((a, i) => a + i.netAmount, 0));
-    const outputVat = round2(validInvoices.reduce((a, i) => a + i.vatAmount, 0));
-    const salesGross = round2(validInvoices.reduce((a, i) => a + i.grossAmount, 0));
-    const cashCollected = round2(validInvoices.reduce((a, i) => a + i.amountPaid, 0));
+    const shared = computeAccountingLedger({
+      invoices,
+      expenses,
+      supplierInvoices,
+      goodsReceipts,
+      inventoryItems,
+      inventoryMovements,
+      payrollRuns,
+      jobs,
+      cashBookEntries,
+    });
 
     let outputStandardNet = 0;
     let outputZeroRated = 0;
@@ -222,37 +249,10 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
       (s) => s.isVatClaimable
     );
     const inputVat = round2(
-      claimableExpenses.reduce((a, e) => a + e.vatAmount, 0) +
-        claimableSupplierInvoices.reduce((a, s) => a + s.vatAmount, 0)
+      shared.expenseInputVatClaimable + shared.supplierInputVatClaimable
     );
-    const totalExpensesNet = round2(
-      expenses.reduce((a, e) => a + e.netAmount, 0) +
-        supplierInvoices.reduce((a, s) => a + s.netAmount, 0)
-    );
-    const cogsNet = round2(
-      expenses
-        .filter(
-          (e) =>
-            e.category === 'Materials & Substrates' ||
-            e.category === 'Tailoring & Trims'
-        )
-        .reduce((a, e) => a + e.netAmount, 0) +
-        supplierInvoices
-          .filter(
-            (s) =>
-              s.category === 'Materials & Substrates' ||
-              s.category === 'Tailoring & Trims' ||
-              s.category === 'Subcontracting & Finishing'
-          )
-          .reduce((a, s) => a + s.netAmount, 0)
-    );
-    const opexNet = round2(totalExpensesNet - cogsNet);
-    const grossProfit = round2(salesNet - cogsNet);
-    const netOperatingProfit = round2(grossProfit - opexNet);
-    const netVatPayable = round2(outputVat - inputVat);
-
     const supplierWhtTotal = round2(
-      supplierInvoices.reduce((a, s) => a + (s.whtAmount || 0), 0) +
+      shared.supplierWhtHeld +
         expenses.reduce((a, e) => a + (e.whtAmount || 0), 0)
     );
     const supplierWhtRemitted = round2(
@@ -263,9 +263,31 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
     const supplierWhtPending = round2(
       Math.max(0, supplierWhtTotal - supplierWhtRemitted)
     );
-    const clientWhtCertificates = round2(
-      validInvoices.reduce((a, i) => a + (i.whtWithheldAmount || 0), 0)
-    );
+
+    // Non-COGS operating expense breakdown by category (excluding capitalized stock lines)
+    const opexByCategory = new Map<string, number>();
+    for (const e of expenses) {
+      if (e.category === 'Materials & Substrates' || e.category === 'Tailoring & Trims') {
+        continue;
+      }
+      const eff = e.isVatClaimable
+        ? round2(e.netAmount || 0)
+        : round2(e.grossAmount || (e.netAmount || 0) + (e.vatAmount || 0));
+      opexByCategory.set(e.category, round2((opexByCategory.get(e.category) || 0) + eff));
+    }
+    for (const si of supplierInvoices) {
+      if (COGS_SUPPLIER_CATEGORIES.includes(si.category)) continue;
+      const lines = classifySupplierInvoiceLines(si, goodsReceipts);
+      const nonStockSum = lines
+        .filter((l) => l.treatment !== 'stock')
+        .reduce((a, l) => a + l.effectiveCost, 0);
+      if (nonStockSum > 0) {
+        opexByCategory.set(
+          si.category,
+          round2((opexByCategory.get(si.category) || 0) + nonStockSum)
+        );
+      }
+    }
 
     const openingReceivables = round2(
       openingBalances
@@ -289,35 +311,42 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
     );
 
     return {
+      ...shared,
       validInvoices,
-      salesNet,
+      salesNet: shared.invoicedNet,
       outputStandardNet: round2(outputStandardNet),
       outputZeroRated: round2(outputZeroRated),
       outputExempt: round2(outputExempt),
-      outputVat,
-      salesGross,
-      cashCollected,
+      salesGross: shared.invoicedGross,
+      cashCollected: shared.cashCollectedInvoices,
       inputStandardNet: round2(inputStandardNet),
       inputZeroRated: round2(inputZeroRated),
       inputExempt: round2(inputExempt),
       claimableExpenses,
       claimableSupplierInvoices,
       inputVat,
-      netVatPayable,
-      totalExpensesNet,
-      cogsNet,
-      opexNet,
-      grossProfit,
-      netOperatingProfit,
+      netOperatingProfit: shared.netProfit,
+      opexByCategory,
       supplierWhtTotal,
       supplierWhtRemitted,
       supplierWhtPending,
-      clientWhtCertificates,
+      clientWhtCertificates: shared.whtCreditsReceivable,
       openingReceivables,
       openingCredits,
       openingPayablesUnmatched,
     };
-  }, [invoices, expenses, supplierInvoices, openingBalances]);
+  }, [
+    invoices,
+    expenses,
+    supplierInvoices,
+    goodsReceipts,
+    inventoryItems,
+    inventoryMovements,
+    payrollRuns,
+    jobs,
+    cashBookEntries,
+    openingBalances,
+  ]);
 
   const handleSaveExpense = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -824,10 +853,11 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
               <h2 className="font-display text-sm font-bold text-slate-900">
-                Statement of Profit &amp; Loss (Excl. VAT)
+                Statement of Profit &amp; Loss (Excl. Claimable VAT)
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Accrual basis across issued tax invoices and recorded supplier expenses
+                Accrual &amp; stock-consumption basis: stock purchases capitalize to Inventory
+                Asset and expense to COGS only when issued to jobs (net of returns).
               </p>
             </div>
             <div className="p-6 divide-y divide-slate-100 text-sm">
@@ -839,14 +869,36 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                   {formatMoney(ledger.salesNet, settings.currency)}
                 </span>
               </div>
-              <div className="py-3 flex justify-between text-slate-600">
-                <span>Less: Direct Production Materials &amp; Tailoring COGS</span>
+
+              <div className="py-2.5 flex justify-between text-slate-600 text-xs">
+                <span>
+                  Less: Consumed Inventory Materials COGS (Issued{' '}
+                  {formatMoney(ledger.stockIssuedCogsNet, settings.currency)} − Returned{' '}
+                  {formatMoney(ledger.stockReturnedCogsCredit, settings.currency)})
+                </span>
+                <span className="font-mono-nums">
+                  ({formatMoney(ledger.stockConsumedCogsNet, settings.currency)})
+                </span>
+              </div>
+              <div className="py-2.5 flex justify-between text-slate-600 text-xs">
+                <span>
+                  Less: Direct Non-Stock Production Materials &amp; Subcontracting COGS
+                </span>
+                <span className="font-mono-nums">
+                  ({formatMoney(ledger.directExpenseCogsNet, settings.currency)})
+                </span>
+              </div>
+              <div className="py-3 flex justify-between font-semibold text-slate-800">
+                <span>Total Cost of Goods Sold (COGS)</span>
                 <span className="font-mono-nums">
                   ({formatMoney(ledger.cogsNet, settings.currency)})
                 </span>
               </div>
+
               <div className="py-3 flex justify-between font-semibold bg-slate-50/70 px-2 rounded">
-                <span className="text-slate-900">Gross Profit</span>
+                <span className="text-slate-900">
+                  Gross Profit ({ledger.grossMarginPct.toFixed(1)}%)
+                </span>
                 <span className="font-mono-nums text-slate-900">
                   {formatMoney(ledger.grossProfit, settings.currency)}
                 </span>
@@ -855,14 +907,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
               {EXPENSE_CATEGORIES.filter(
                 (c) => c !== 'Materials & Substrates' && c !== 'Tailoring & Trims'
               ).map((cat) => {
-                const catSum = round2(
-                  expenses
-                    .filter((e) => e.category === cat)
-                    .reduce((a, e) => a + e.netAmount, 0) +
-                    supplierInvoices
-                      .filter((s) => s.category === cat)
-                      .reduce((a, s) => a + s.netAmount, 0)
-                );
+                const catSum = ledger.opexByCategory.get(cat) || 0;
                 if (catSum === 0) return null;
                 return (
                   <div key={cat} className="py-2.5 flex justify-between text-slate-600">
@@ -873,6 +918,24 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                   </div>
                 );
               })}
+
+              {ledger.payrollGross > 0 && (
+                <div className="py-2.5 flex justify-between text-slate-600">
+                  <span>Payroll &amp; Staff Remuneration (Gross)</span>
+                  <span className="font-mono-nums">
+                    ({formatMoney(ledger.payrollGross, settings.currency)})
+                  </span>
+                </div>
+              )}
+
+              {ledger.salesCommissions > 0 && (
+                <div className="py-2.5 flex justify-between text-slate-600">
+                  <span>Sales Team Commissions</span>
+                  <span className="font-mono-nums">
+                    ({formatMoney(ledger.salesCommissions, settings.currency)})
+                  </span>
+                </div>
+              )}
 
               <div className="py-4 flex justify-between font-bold text-base">
                 <span className="text-slate-900">Net Operating Profit / (Loss)</span>
@@ -888,6 +951,78 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                 <span>Total Settled on Customer Invoices (Cash + WHT)</span>
                 <span className="font-mono-nums font-medium text-slate-700">
                   {formatMoney(ledger.cashCollected, settings.currency)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Inventory Asset & Stock-to-COGS Reconciliation Card */}
+          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
+              <h3 className="font-display text-sm font-bold text-slate-900">
+                Inventory Asset &amp; Reconciliation (Balance Sheet vs P&amp;L)
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Unconsumed stock stays on Inventory Asset; supplier settlement &amp; AP remain on
+                cash and payables schedules without double counting.
+              </p>
+            </div>
+            <div className="p-6 divide-y divide-slate-100 text-xs">
+              <div className="py-2.5 flex justify-between">
+                <span className="font-medium text-slate-800">
+                  On-Hand Inventory Asset ({ledger.inventoryTotalUnits} units across{' '}
+                  {inventoryItems.length} SKUs)
+                </span>
+                <span className="font-mono-nums font-bold text-blue-700">
+                  {formatMoney(ledger.inventoryAssetValue, settings.currency)}
+                </span>
+              </div>
+              <div className="py-2.5 flex justify-between">
+                <span className="text-slate-600">
+                  Stock Purchases Capitalized on Classified / Linked Supplier Bills
+                </span>
+                <span className="font-mono-nums font-semibold text-slate-900">
+                  {formatMoney(ledger.stockCapitalizedFromBills, settings.currency)}
+                </span>
+              </div>
+              <div className="py-2.5 flex justify-between">
+                <span className="text-slate-600">
+                  Accepted GRN Stock Value vs Linked Stock Bills (Variance)
+                </span>
+                <span className="font-mono-nums font-medium text-slate-800">
+                  {formatMoney(ledger.acceptedGrnStockValue, settings.currency)} vs{' '}
+                  {formatMoney(ledger.linkedStockBillValue, settings.currency)}{' '}
+                  <span
+                    className={
+                      Math.abs(ledger.grnToBillVariance) > 0.05
+                        ? 'text-amber-700 font-semibold'
+                        : 'text-emerald-700'
+                    }
+                  >
+                    ({ledger.grnToBillVariance >= 0 ? '+' : ''}
+                    {formatMoney(ledger.grnToBillVariance, settings.currency)})
+                  </span>
+                </span>
+              </div>
+              <div className="py-2.5 flex justify-between">
+                <span className="text-slate-600">
+                  Stock Receipts Posted / Stock Consumed to Jobs (Net)
+                </span>
+                <span className="font-mono-nums text-slate-800">
+                  In {formatMoney(ledger.stockReceiptsCost, settings.currency)} · Net COGS{' '}
+                  {formatMoney(ledger.stockConsumedCogsNet, settings.currency)}
+                </span>
+              </div>
+              <div className="py-2.5 flex justify-between">
+                <span className="text-slate-600">
+                  Supplier Settlements &amp; Cash Outflow / Open AP Balance
+                </span>
+                <span className="font-mono-nums text-slate-800">
+                  Settled {formatMoney(ledger.supplierPaid, settings.currency)} (Cash Out{' '}
+                  {formatMoney(ledger.cashBookSupplierOutflow, settings.currency)}) · AP{' '}
+                  <strong className="text-amber-700">
+                    {formatMoney(ledger.supplierPayables, settings.currency)}
+                  </strong>
                 </span>
               </div>
             </div>

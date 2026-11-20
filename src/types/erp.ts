@@ -345,6 +345,9 @@ export interface JobCostEntry {
   unitCost: number;
   totalCost: number;
   loggedByName: string;
+  inventoryItemId?: string;
+  inventoryMovementId?: string;
+  sourceType?: 'manual' | 'stock_issue' | 'stock_return';
   ownerUid: string;
   staffUids: string[];
   createdAt?: unknown;
@@ -358,6 +361,12 @@ export interface InvoiceLine {
   netAmount: number;
   vatAmount: number;
   grossAmount: number;
+  costTreatment?: 'stock' | 'expense';
+  inventoryItemId?: string;
+  sku?: string;
+  unit?: string;
+  grnLineRef?: string;
+  capitalizedCost?: number;
 }
 
 export interface Invoice {
@@ -571,6 +580,9 @@ export interface SupplierInvoice {
   status: SupplierInvoiceStatus;
   paymentMethod: string;
   paymentReference: string;
+  lastPaymentDate?: string;
+  linkedGrnIds?: string[];
+  stockClassificationAudit?: string;
   notes: string;
   ownerUid: string;
   viewerUids: string[];
@@ -592,6 +604,8 @@ export type InventoryStockStatus = 'In Stock' | 'Low Stock' | 'Out of Stock';
 export type InventoryMovementType =
   | 'Stock In'
   | 'Issue to Job'
+  | 'Material Return'
+  | 'Location Transfer'
   | 'Sample Out'
   | 'Sample Return'
   | 'Adjustment';
@@ -619,9 +633,20 @@ export interface InventoryItem {
 export interface InventoryMovement {
   id: string;
   itemId: string;
+  sku?: string;
+  itemName?: string;
   movementType: InventoryMovementType;
   quantityDelta: number;
   resultingQty: number;
+  unitCost?: number;
+  totalCost?: number;
+  movementDate?: string;
+  movedQuantity?: number;
+  locationFrom?: string;
+  locationTo?: string;
+  supplierInvoiceId?: string;
+  grnId?: string;
+  reversedMovementId?: string;
   jobId: string;
   jobNumber: string;
   recipientOrReason: string;
@@ -641,6 +666,7 @@ export interface GoodsReceiptLine {
   quantityReceived: number;
   unit: string;
   unitCost: number;
+  supplierInvoiceLineIndex?: number;
 }
 
 export interface GoodsReceipt {
@@ -658,6 +684,7 @@ export interface GoodsReceipt {
   items: GoodsReceiptLine[];
   totalValue: number;
   postToInventory: boolean;
+  stockLinkAudit?: string;
   notes: string;
   ownerUid: string;
   staffUids: string[];

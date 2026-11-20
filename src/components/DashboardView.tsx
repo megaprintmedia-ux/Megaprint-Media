@@ -11,11 +11,14 @@ import {
   X,
 } from 'lucide-react';
 import {
+  CashBookEntry,
   Client,
   CompanySettings,
   Employee,
   Expense,
+  GoodsReceipt,
   InventoryItem,
+  InventoryMovement,
   Invoice,
   Job,
   LeaveRequest,
@@ -23,12 +26,14 @@ import {
   NoteAudience,
   NoteTone,
   OperationalNote,
+  PayrollRun,
   ServiceCategory,
   SupplierInvoice,
   TimeEntry,
   UserRole,
 } from '../types/erp';
-import { calculateJobCosting, formatMoney } from '../utils/vat';
+import { calculateJobCosting, formatMoney, round2 } from '../utils/vat';
+import { computeAccountingLedger } from '../utils/inventoryAccounting';
 import { StatusText } from './StatusText';
 
 interface DashboardViewProps {
@@ -40,6 +45,10 @@ interface DashboardViewProps {
   expenses: Expense[];
   supplierInvoices: SupplierInvoice[];
   inventoryItems: InventoryItem[];
+  inventoryMovements?: InventoryMovement[];
+  goodsReceipts?: GoodsReceipt[];
+  payrollRuns?: PayrollRun[];
+  cashBookEntries?: CashBookEntry[];
   employees: Employee[];
   timeEntries: TimeEntry[];
   leaveRequests: LeaveRequest[];
@@ -145,6 +154,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   expenses,
   supplierInvoices,
   inventoryItems,
+  inventoryMovements = [],
+  goodsReceipts = [],
+  payrollRuns = [],
+  cashBookEntries = [],
   employees,
   timeEntries,
   leaveRequests,
@@ -326,13 +339,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       .filter((j) => j.status !== 'Cancelled')
       .reduce((acc, j) => acc + (j.quantity || 0), 0);
 
-    const monthExpensesNet =
-      expenses
-        .filter((e) => extractMonthKey(e.createdAt, e.expenseDate) === selectedMonth)
-        .reduce((acc, e) => acc + (e.netAmount || 0), 0) +
-      supplierInvoices
-        .filter((s) => extractMonthKey(s.createdAt, s.invoiceDate) === selectedMonth)
-        .reduce((acc, s) => acc + (s.netAmount || 0), 0);
+    const monthLedger = computeAccountingLedger({
+      invoices,
+      expenses,
+      supplierInvoices,
+      goodsReceipts,
+      inventoryItems,
+      inventoryMovements,
+      payrollRuns,
+      jobs,
+      cashBookEntries,
+      fromDate: `${selectedMonth}-01`,
+      toDate: `${selectedMonth}-31`,
+    });
+    const monthExpensesNet = round2(monthLedger.cogsNet + monthLedger.opexNet);
 
     const monthHours = timeEntries
       .filter((t) => extractMonthKey(t.createdAt, t.date) === selectedMonth)
@@ -350,10 +370,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       completedJobsCount: completedMonthJobs.length,
       totalUnitsThisMonth,
       monthExpensesNet,
-      netMonthlyProfit: totalRevenueNet - monthExpensesNet,
+      netMonthlyProfit: round2(totalRevenueNet - monthExpensesNet),
       monthHours,
     };
-  }, [selectedMonth, invoices, jobs, expenses, supplierInvoices, timeEntries]);
+  }, [
+    selectedMonth,
+    invoices,
+    jobs,
+    expenses,
+    supplierInvoices,
+    goodsReceipts,
+    inventoryItems,
+    inventoryMovements,
+    payrollRuns,
+    cashBookEntries,
+    timeEntries,
+  ]);
 
   const handleSeed = async () => {
     setSeeding(true);

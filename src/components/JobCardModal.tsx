@@ -17,6 +17,7 @@ import {
   calculateJobCosting,
   formatMoney,
 } from '../utils/vat';
+import { computeJobActualCostFromEntries } from '../utils/inventoryAccounting';
 import { BrandLogo } from './BrandLogo';
 import { StatusText } from './StatusText';
 
@@ -145,7 +146,22 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
     return () => unsub();
   }, [job.id, subscribeJobCosts]);
 
-  const costing = calculateJobCosting(job);
+  const displayActualCost =
+    costs.length > 0
+      ? computeJobActualCostFromEntries(costs)
+      : job.actualCostTotal || 0;
+  const effectiveJobForCosting =
+    displayActualCost !== (job.actualCostTotal || 0)
+      ? { ...job, actualCostTotal: displayActualCost }
+      : job;
+  const costing = calculateJobCosting(effectiveJobForCosting);
+  const stockIssueTotal = costs
+    .filter((c) => c.sourceType === 'stock_issue')
+    .reduce((a, c) => a + (c.totalCost || 0), 0);
+  const stockReturnTotal = costs
+    .filter((c) => c.sourceType === 'stock_return')
+    .reduce((a, c) => a + (c.totalCost || 0), 0);
+  const hasStockIssues = stockIssueTotal > 0;
   const isLegacyUnextracted =
     job.legacyLinesExtracted === false || job.vatTreatment === 'unknown';
   const canEditProduction =
@@ -692,6 +708,16 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                   <div className="text-xs font-semibold text-slate-900">
                     Log Actual Job Cost
                   </div>
+                  {costType === 'Material' && hasStockIssues && (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+                      <strong>Avoid Double Costing:</strong> Inventory stock issues (net{' '}
+                      <span className="font-mono-nums font-semibold">
+                        {formatMoney(Math.max(0, stockIssueTotal - stockReturnTotal), settings.currency)}
+                      </span>
+                      ) are already posted automatically from stock movements. Only add extra
+                      direct non-stock materials here.
+                    </div>
+                  )}
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                     <select
                       value={costType}
@@ -766,25 +792,45 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {costs.map((c) => (
-                          <tr key={c.id}>
-                            <td className="py-2 px-3 font-medium text-slate-700">
-                              {c.costType}
-                            </td>
-                            <td className="py-2 px-3 text-slate-800">
-                              <div>{c.description}</div>
-                              <div className="text-[11px] text-slate-400">
-                                Logged by {c.loggedByName}
-                              </div>
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono-nums text-slate-600">
-                              {c.quantity}
-                            </td>
-                            <td className="py-2 px-3 text-right font-mono-nums font-semibold text-slate-900">
-                              {formatMoney(c.totalCost, settings.currency)}
-                            </td>
-                          </tr>
-                        ))}
+                        {costs.map((c) => {
+                          const isReturn = c.sourceType === 'stock_return';
+                          const isStockIssue = c.sourceType === 'stock_issue';
+                          return (
+                            <tr key={c.id}>
+                              <td className="py-2 px-3 font-medium text-slate-700">
+                                <div>{c.costType}</div>
+                                {isStockIssue && (
+                                  <span className="inline-block mt-0.5 text-[10px] font-semibold text-blue-700">
+                                    Stock Issue
+                                  </span>
+                                )}
+                                {isReturn && (
+                                  <span className="inline-block mt-0.5 text-[10px] font-semibold text-emerald-700">
+                                    Return to Stock
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2 px-3 text-slate-800">
+                                <div>{c.description}</div>
+                                <div className="text-[11px] text-slate-400">
+                                  Logged by {c.loggedByName}
+                                </div>
+                              </td>
+                              <td className="py-2 px-3 text-right font-mono-nums text-slate-600">
+                                {isReturn ? `-${c.quantity}` : c.quantity}
+                              </td>
+                              <td
+                                className={`py-2 px-3 text-right font-mono-nums font-semibold ${
+                                  isReturn ? 'text-emerald-700' : 'text-slate-900'
+                                }`}
+                              >
+                                {isReturn
+                                  ? `-${formatMoney(c.totalCost, settings.currency)}`
+                                  : formatMoney(c.totalCost, settings.currency)}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>

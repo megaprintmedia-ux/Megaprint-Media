@@ -18,12 +18,14 @@ import {
   UserRole,
 } from '../types/erp';
 import { formatMoney, round2 } from '../utils/vat';
+import { getNetIssuedQuantityForJob } from '../utils/inventoryAccounting';
 import { StatusText } from './StatusText';
 
 interface InventoryViewProps {
   role: UserRole;
   settings: CompanySettings;
   inventoryItems: InventoryItem[];
+  inventoryMovements?: InventoryMovement[];
   jobs: Job[];
   onCreateInventoryItem: (
     input: Omit<
@@ -35,8 +37,11 @@ interface InventoryViewProps {
     item: InventoryItem;
     movementType: InventoryMovementType;
     quantityChange: number;
+    unitCostOverride?: number;
+    movementDate?: string;
     jobId?: string;
     jobNumber?: string;
+    targetLocation?: string;
     recipientOrReason: string;
     sampleClientOrSpec?: string;
   }) => Promise<void>;
@@ -58,6 +63,8 @@ const ITEM_TYPES: InventoryItemType[] = [
 const MOVEMENT_TYPES: InventoryMovementType[] = [
   'Stock In',
   'Issue to Job',
+  'Material Return',
+  'Location Transfer',
   'Sample Out',
   'Sample Return',
   'Adjustment',
@@ -67,6 +74,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   role,
   settings,
   inventoryItems,
+  inventoryMovements = [],
   jobs,
   onCreateInventoryItem,
   onAdjustInventoryStock,
@@ -97,9 +105,15 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
   // Stock adjustment modal state
   const [movementType, setMovementType] = useState<InventoryMovementType>('Issue to Job');
   const [quantityChange, setQuantityChange] = useState('1');
+  const [movementDate, setMovementDate] = useState(
+    new Date().toISOString().slice(0, 10)
+  );
+  const [movUnitCost, setMovUnitCost] = useState('');
+  const [targetLocation, setTargetLocation] = useState('');
   const [movJobId, setMovJobId] = useState('');
   const [recipientOrReason, setRecipientOrReason] = useState('');
   const [movSampleSpec, setMovSampleSpec] = useState('');
+  const [adjustError, setAdjustError] = useState<string | null>(null);
   const [adjusting, setAdjusting] = useState(false);
 
   useEffect(() => {
@@ -191,29 +205,65 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
     }
   };
 
+  const selectedReturnJobStats = useMemo(() => {
+    if (!adjustTarget || !movJobId || movementType !== 'Material Return') return null;
+    return getNetIssuedQuantityForJob({
+      itemId: adjustTarget.id,
+      jobId: movJobId,
+      movements: inventoryMovements,
+    });
+  }, [adjustTarget, movJobId, movementType, inventoryMovements]);
+
   const handleAdjustSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!adjustTarget) return;
+    setAdjustError(null);
     const delta = Number(quantityChange);
-    if (!delta || Number.isNaN(delta)) return;
+    if (!delta || Number.isNaN(delta)) {
+      setAdjustError('Please enter a valid non-zero quantity.');
+      return;
+    }
     const chosenJob = jobs.find((j) => j.id === movJobId);
+    const parsedOverride =
+      movementType === 'Stock In' && movUnitCost.trim() !== ''
+        ? Number(movUnitCost)
+        : undefined;
+    if (
+      movementType === 'Stock In' &&
+      parsedOverride !== undefined &&
+      (!Number.isFinite(parsedOverride) || parsedOverride < 0)
+    ) {
+      setAdjustError('Receipt unit cost cannot be negative or invalid.');
+      return;
+    }
     setAdjusting(true);
     try {
       await onAdjustInventoryStock({
         item: adjustTarget,
         movementType,
         quantityChange: delta,
+        unitCostOverride: parsedOverride,
+        movementDate,
         jobId: chosenJob?.id || '',
         jobNumber: chosenJob?.jobNumber || '',
+        targetLocation:
+          movementType === 'Location Transfer' ? targetLocation.trim() : undefined,
         recipientOrReason: recipientOrReason.trim() || movementType,
         sampleClientOrSpec:
           adjustTarget.itemType === 'Sample' ? movSampleSpec.trim() : undefined,
       });
       setAdjustTarget(null);
       setQuantityChange('1');
+      setMovUnitCost('');
+      setTargetLocation('');
       setMovJobId('');
       setRecipientOrReason('');
       setMovSampleSpec('');
+      setAdjustError(null);
+    } catch (err) {
+      setAdjustError(
+        err instanceof Error ? err.message : 'Unable to record stock movement.'
+      );
     } finally {
       setAdjusting(false);
     }
@@ -397,6 +447,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                                   : 'Issue to Job'
                               );
                               setQuantityChange('1');
+                              setMovementDate(new Date().toISOString().slice(0, 10));
+                              setMovUnitCost(String(item.unitCost || 0));
+                              setTargetLocation(item.location || '');
+                              setMovJobId('');
+                              setRecipientOrReason('');
+                              setAdjustError(null);
                               setMovSampleSpec(item.sampleClientOrSpec || '');
                             }}
                             className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-100"
@@ -651,48 +707,120 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
               </button>
             </div>
             <form onSubmit={handleAdjustSubmit} className="p-5 space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Movement Type
-                </label>
-                <select
-                  value={movementType}
-                  onChange={(e) =>
-                    setMovementType(e.target.value as InventoryMovementType)
-                  }
-                  className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white"
-                >
-                  {MOVEMENT_TYPES.map((mt) => (
-                    <option key={mt} value={mt}>
-                      {mt}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {adjustError && (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                  {adjustError}
+                </div>
+              )}
 
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Quantity ({adjustTarget.unit})
-                  {movementType === 'Adjustment' && ' (use negative to reduce)'}
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  required
-                  value={quantityChange}
-                  onChange={(e) => setQuantityChange(e.target.value)}
-                  className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
-                />
-              </div>
-
-              {(movementType === 'Issue to Job' || movementType === 'Sample Out') && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Job Reference (Optional)
+                    Movement Type
+                  </label>
+                  <select
+                    value={movementType}
+                    onChange={(e) => {
+                      setMovementType(e.target.value as InventoryMovementType);
+                      setAdjustError(null);
+                    }}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white"
+                  >
+                    {MOVEMENT_TYPES.map((mt) => (
+                      <option key={mt} value={mt}>
+                        {mt}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Movement Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={movementDate}
+                    onChange={(e) => setMovementDate(e.target.value)}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className={movementType === 'Stock In' ? '' : 'sm:col-span-2'}>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Quantity ({adjustTarget.unit})
+                    {movementType === 'Adjustment' && ' (use negative to reduce)'}
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    required
+                    value={quantityChange}
+                    onChange={(e) => {
+                      setQuantityChange(e.target.value);
+                      setAdjustError(null);
+                    }}
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+                  />
+                </div>
+
+                {movementType === 'Stock In' && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      Receipt Unit Cost ({settings.currency})
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.0001"
+                      value={movUnitCost}
+                      onChange={(e) => {
+                        setMovUnitCost(e.target.value);
+                        setAdjustError(null);
+                      }}
+                      className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm font-mono-nums"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {movementType === 'Location Transfer' && (
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-medium text-slate-700">
+                    Destination Bin / Warehouse Location *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={targetLocation}
+                    onChange={(e) => setTargetLocation(e.target.value)}
+                    placeholder="e.g. Print Bay B2 or Finishing Store"
+                    className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
+                  />
+                  <p className="text-[11px] text-slate-500">
+                    Internal transfers relocate stock between bins without affecting
+                    total quantity on hand or Cost of Goods Sold (COGS).
+                  </p>
+                </div>
+              )}
+
+              {(movementType === 'Issue to Job' ||
+                movementType === 'Material Return' ||
+                movementType === 'Sample Out') && (
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-medium text-slate-700">
+                    Job Reference{' '}
+                    {movementType === 'Material Return' ? '(Recommended)' : '(Optional)'}
                   </label>
                   <select
                     value={movJobId}
-                    onChange={(e) => setMovJobId(e.target.value)}
+                    onChange={(e) => {
+                      setMovJobId(e.target.value);
+                      setAdjustError(null);
+                    }}
                     className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white"
                   >
                     <option value="">No specific job</option>
@@ -702,6 +830,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                       </option>
                     ))}
                   </select>
+                  {movementType === 'Material Return' && selectedReturnJobStats && (
+                    <div className="text-[11px] text-slate-600 font-mono-nums">
+                      Issued to job: {selectedReturnJobStats.issuedQty} {adjustTarget.unit} ·
+                      Returned: {selectedReturnJobStats.returnedQty} {adjustTarget.unit} ·
+                      Max returnable: <strong>{selectedReturnJobStats.netIssuedQty} {adjustTarget.unit}</strong>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -714,7 +849,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   required
                   value={recipientOrReason}
                   onChange={(e) => setRecipientOrReason(e.target.value)}
-                  placeholder="e.g. Issued to Embroidery Bay / Sent to Client Fitting"
+                  placeholder="e.g. Issued to Embroidery Bay / Unused material returned from job"
                   className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
                 />
               </div>
@@ -728,7 +863,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                     type="text"
                     value={movSampleSpec}
                     onChange={(e) => setMovSampleSpec(e.target.value)}
-                    placeholder="e.g. Returned to showroom / With Acacia Summit Hotels"
+                    placeholder="e.g. Returned to showroom / With client for sizing"
                     className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm"
                   />
                 </div>
@@ -758,7 +893,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
       {/* Stock Movement History Modal */}
       {historyTarget && (
         <div className="fixed inset-0 z-50 bg-slate-950/60 flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-lg w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+          <div className="bg-white border border-slate-200 rounded-lg w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
               <div>
                 <h2 className="font-display text-base font-bold text-slate-900">
@@ -767,6 +902,15 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                 <p className="text-xs text-slate-500">
                   {historyTarget.name} · Current Balance: {historyTarget.quantityOnHand}{' '}
                   {historyTarget.unit}
+                  {role !== 'production' && (
+                    <>
+                      {' '}
+                      · Avg Cost:{' '}
+                      <span className="font-mono-nums font-medium text-slate-700">
+                        {formatMoney(historyTarget.unitCost, settings.currency)}/{historyTarget.unit}
+                      </span>
+                    </>
+                  )}
                 </p>
               </div>
               <button
@@ -788,10 +932,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
-                        <th className="py-2 px-3">Movement</th>
+                        <th className="py-2 px-3">Date &amp; Movement</th>
                         <th className="py-2 px-3">Recipient / Reason</th>
                         <th className="py-2 px-3">By</th>
                         <th className="py-2 px-3 text-right">Delta</th>
+                        {role !== 'production' && (
+                          <th className="py-2 px-3 text-right">Cost</th>
+                        )}
                         <th className="py-2 px-3 text-right">Resulting</th>
                       </tr>
                     </thead>
@@ -800,11 +947,22 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                         <tr key={mov.id}>
                           <td className="py-2.5 px-3 font-medium text-slate-900">
                             <div>{mov.movementType}</div>
+                            {mov.movementDate && (
+                              <div className="text-[11px] font-mono-nums text-slate-400">
+                                {mov.movementDate}
+                              </div>
+                            )}
                             {mov.jobNumber && (
                               <div className="text-[11px] font-mono-nums text-blue-700">
                                 Job {mov.jobNumber}
                               </div>
                             )}
+                            {mov.movementType === 'Location Transfer' &&
+                              mov.locationTo && (
+                                <div className="text-[11px] text-slate-500">
+                                  {mov.locationFrom || 'Store'} → {mov.locationTo}
+                                </div>
+                              )}
                           </td>
                           <td className="py-2.5 px-3 text-slate-700">
                             {mov.recipientOrReason}
@@ -814,14 +972,33 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                           </td>
                           <td
                             className={`py-2.5 px-3 text-right font-mono-nums font-semibold ${
-                              mov.quantityDelta >= 0 ? 'text-emerald-700' : 'text-red-700'
+                              mov.quantityDelta > 0
+                                ? 'text-emerald-700'
+                                : mov.quantityDelta < 0
+                                  ? 'text-red-700'
+                                  : 'text-slate-600'
                             }`}
                           >
-                            {mov.quantityDelta > 0
-                              ? `+${mov.quantityDelta}`
-                              : mov.quantityDelta}{' '}
-                            {historyTarget.unit}
+                            {mov.movementType === 'Location Transfer'
+                              ? `${mov.movedQuantity ?? 0} ${historyTarget.unit} (Transfer)`
+                              : `${mov.quantityDelta > 0 ? `+${mov.quantityDelta}` : mov.quantityDelta} ${historyTarget.unit}`}
                           </td>
+                          {role !== 'production' && (
+                            <td className="py-2.5 px-3 text-right font-mono-nums text-slate-700">
+                              {mov.movementType === 'Location Transfer' ? (
+                                <span className="text-slate-400">No COGS</span>
+                              ) : (
+                                <>
+                                  <div>
+                                    {formatMoney(mov.totalCost ?? 0, settings.currency)}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    @{formatMoney(mov.unitCost ?? 0, settings.currency)}
+                                  </div>
+                                </>
+                              )}
+                            </td>
+                          )}
                           <td className="py-2.5 px-3 text-right font-mono-nums text-slate-900">
                             {mov.resultingQty} {historyTarget.unit}
                           </td>

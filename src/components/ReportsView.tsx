@@ -1,12 +1,16 @@
 import React, { useMemo, useState } from 'react';
 import { Calendar, Download, Printer } from 'lucide-react';
 import {
+  CashBookEntry,
   Client,
   CompanySettings,
   Expense,
+  GoodsReceipt,
   InventoryItem,
+  InventoryMovement,
   Invoice,
   Job,
+  PayrollRun,
   ServiceCategory,
   SupplierInvoice,
   TaxAccessScope,
@@ -19,6 +23,7 @@ import {
   round2,
   summarizeTaxBreakdown,
 } from '../utils/vat';
+import { computeAccountingLedger } from '../utils/inventoryAccounting';
 import { BrandLogo } from './BrandLogo';
 import { StatusText } from './StatusText';
 
@@ -32,6 +37,10 @@ interface ReportsViewProps {
   supplierInvoices: SupplierInvoice[];
   expenses: Expense[];
   inventoryItems: InventoryItem[];
+  inventoryMovements?: InventoryMovement[];
+  goodsReceipts?: GoodsReceipt[];
+  payrollRuns?: PayrollRun[];
+  cashBookEntries?: CashBookEntry[];
   timeEntries: TimeEntry[];
 }
 
@@ -70,6 +79,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   supplierInvoices,
   expenses,
   inventoryItems,
+  inventoryMovements = [],
+  goodsReceipts = [],
+  payrollRuns = [],
+  cashBookEntries = [],
   timeEntries,
 }) => {
   const isVatOnly = role === 'accounts' && taxScope === 'vat_only';
@@ -183,10 +196,24 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       scopedInvoices.reduce((a, i) => a + (i.whtWithheldAmount || 0), 0)
     );
 
+    const sharedLedger = computeAccountingLedger({
+      invoices,
+      expenses,
+      supplierInvoices,
+      goodsReceipts,
+      inventoryItems,
+      inventoryMovements,
+      payrollRuns,
+      jobs,
+      cashBookEntries,
+      fromDate: useAllDates ? undefined : fromDate,
+      toDate: useAllDates ? undefined : toDate,
+    });
+
     const totalInputVat = round2(supplierInputVat + expenseInputVat);
     const netVatPayable = round2(outputVat - totalInputVat);
-    const totalOutflowNet = round2(supplierNet + expenseNet);
-    const operatingMargin = round2(salesNet - totalOutflowNet);
+    const totalOutflowNet = round2(sharedLedger.cogsNet + sharedLedger.opexNet);
+    const operatingMargin = round2(sharedLedger.invoicedNet - totalOutflowNet);
 
     // Job profitability breakdown
     const jobCostRows = scopedJobs
@@ -240,9 +267,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     const lowStockItems = inventoryItems.filter(
       (i) => i.status === 'Low Stock' || i.status === 'Out of Stock'
     );
-    const inventoryValuation = round2(
-      inventoryItems.reduce((a, i) => a + i.quantityOnHand * i.unitCost, 0)
-    );
+    const inventoryValuation = sharedLedger.inventoryAssetValue;
 
     return {
       scopedJobs,
@@ -272,6 +297,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       clientWhtTotal,
       totalOutflowNet,
       operatingMargin,
+      cogsNet: sharedLedger.cogsNet,
+      opexNet: sharedLedger.opexNet,
+      stockConsumedCogsNet: sharedLedger.stockConsumedCogsNet,
+      stockCapitalizedFromBills: sharedLedger.stockCapitalizedFromBills,
       jobCostRows,
       clientSummary,
       categorySplit,
@@ -284,7 +313,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     invoices,
     supplierInvoices,
     expenses,
+    goodsReceipts,
     inventoryItems,
+    inventoryMovements,
+    payrollRuns,
+    cashBookEntries,
     timeEntries,
     clients,
     categoryFilter,
@@ -659,12 +692,13 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               </div>
             </div>
             <div className="bg-white border border-slate-200 rounded-lg p-5">
-              <div className="text-xs text-slate-500">Supplier Bills &amp; Expenses (Net)</div>
+              <div className="text-xs text-slate-500">COGS &amp; Operating Expenses</div>
               <div className="mt-2 font-mono-nums text-2xl font-semibold text-slate-900">
                 {formatMoney(reportData.totalOutflowNet, settings.currency)}
               </div>
               <div className="mt-1 text-xs text-slate-500 font-mono-nums">
-                Payables due {formatMoney(reportData.payables, settings.currency)}
+                COGS {formatMoney(reportData.cogsNet, settings.currency)} · Payables{' '}
+                {formatMoney(reportData.payables, settings.currency)}
               </div>
             </div>
             <div className="bg-white border border-slate-200 rounded-lg p-5">
@@ -677,7 +711,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 {formatMoney(reportData.operatingMargin, settings.currency)}
               </div>
               <div className="mt-1 text-xs text-slate-500 font-mono-nums">
-                Receivables {formatMoney(reportData.receivables, settings.currency)}
+                Inventory {formatMoney(reportData.inventoryValuation, settings.currency)} · AR{' '}
+                {formatMoney(reportData.receivables, settings.currency)}
               </div>
             </div>
             <div className="bg-white border border-slate-200 rounded-lg p-5">

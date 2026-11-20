@@ -21,6 +21,7 @@ import {
   UserRole,
 } from '../types/erp';
 import { formatMoney, round2 } from '../utils/vat';
+import { computeSupplierLineEffectiveCost, round4 } from '../utils/inventoryAccounting';
 import { StatusText } from './StatusText';
 
 interface GoodsReceivedViewProps {
@@ -66,6 +67,7 @@ interface DraftGrnLine {
   quantityReceived: string;
   unit: string;
   unitCost: string;
+  supplierInvoiceLineIndex?: number;
 }
 
 const CONDITIONS: GoodsReceiptCondition[] = [
@@ -229,16 +231,34 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
       lines.length === 1 &&
       !lines[0].description.trim()
     ) {
+      const hasStockFlagged = inv.lines.some((l) => l.costTreatment === 'stock');
+      const indexedLines = inv.lines
+        .map((l, idx) => ({ l, idx }))
+        .filter((x) => !hasStockFlagged || x.l.costTreatment === 'stock')
+        .slice(0, 10);
+
       setLines(
-        inv.lines.slice(0, 10).map((l) => ({
-          inventoryItemId: '',
-          sku: '',
-          description: l.description,
-          quantityOrdered: String(l.quantity),
-          quantityReceived: String(l.quantity),
-          unit: 'Pcs',
-          unitCost: String(l.unitPrice),
-        }))
+        indexedLines.map(({ l, idx }) => {
+          const qty = Math.max(0.01, Number(l.quantity) || 1);
+          const { effectiveCost } = computeSupplierLineEffectiveCost({
+            line: l,
+            isVatClaimable: inv.isVatClaimable,
+          });
+          const effectiveUnit = round4(effectiveCost / qty);
+          const matchedInv = l.inventoryItemId
+            ? inventoryItems.find((it) => it.id === l.inventoryItemId)
+            : undefined;
+          return {
+            inventoryItemId: l.inventoryItemId || '',
+            sku: l.sku || matchedInv?.sku || '',
+            description: l.description,
+            quantityOrdered: String(l.quantity),
+            quantityReceived: String(l.quantity),
+            unit: l.unit || matchedInv?.unit || 'Pcs',
+            unitCost: String(effectiveUnit),
+            supplierInvoiceLineIndex: idx,
+          };
+        })
       );
     }
   };
@@ -255,9 +275,10 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
           ...row,
           inventoryItemId: item.id,
           sku: item.sku,
-          description: item.name,
+          description: row.description.trim() ? row.description : item.name,
           unit: item.unit,
-          unitCost: String(item.unitCost),
+          unitCost:
+            Number(row.unitCost) > 0 ? row.unitCost : String(item.unitCost),
         };
       })
     );
@@ -269,15 +290,21 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
     const chosenJob = jobs.find((j) => j.id === jobId);
     const chosenSupInv = supplierInvoices.find((s) => s.id === supplierInvoiceId);
 
-    const parsedLines: GoodsReceiptLine[] = lines.slice(0, 10).map((l) => ({
-      inventoryItemId: l.inventoryItemId,
-      sku: l.sku.trim(),
-      description: l.description.trim() || 'Delivered Item',
-      quantityOrdered: Math.max(0, Number(l.quantityOrdered) || 0),
-      quantityReceived: Math.max(0, Number(l.quantityReceived) || 0),
-      unit: l.unit.trim() || 'Pcs',
-      unitCost: Math.max(0, Number(l.unitCost) || 0),
-    }));
+    const parsedLines: GoodsReceiptLine[] = lines.slice(0, 10).map((l) => {
+      const base: GoodsReceiptLine = {
+        inventoryItemId: l.inventoryItemId,
+        sku: l.sku.trim(),
+        description: l.description.trim() || 'Delivered Item',
+        quantityOrdered: Math.max(0, round4(Number(l.quantityOrdered) || 0)),
+        quantityReceived: Math.max(0, round4(Number(l.quantityReceived) || 0)),
+        unit: l.unit.trim() || 'Pcs',
+        unitCost: Math.max(0, round4(Number(l.unitCost) || 0)),
+      };
+      if (chosenSupInv && l.supplierInvoiceLineIndex !== undefined) {
+        base.supplierInvoiceLineIndex = l.supplierInvoiceLineIndex;
+      }
+      return base;
+    });
 
     setSaving(true);
     try {
@@ -376,6 +403,7 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
             quantityReceived: String(l.quantityReceived),
             unit: l.unit || 'Pcs',
             unitCost: String(l.unitCost),
+            supplierInvoiceLineIndex: l.supplierInvoiceLineIndex,
           }))
         : [
             {
@@ -403,9 +431,10 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
           ...row,
           inventoryItemId: item.id,
           sku: item.sku,
-          description: item.name,
+          description: row.description.trim() ? row.description : item.name,
           unit: item.unit,
-          unitCost: String(item.unitCost),
+          unitCost:
+            Number(row.unitCost) > 0 ? row.unitCost : String(item.unitCost),
         };
       })
     );
@@ -417,15 +446,21 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
     const chosenJob = jobs.find((j) => j.id === editJobId);
     const chosenSupInv = supplierInvoices.find((s) => s.id === editSupplierInvoiceId);
 
-    const parsedLines: GoodsReceiptLine[] = editLines.slice(0, 10).map((l) => ({
-      inventoryItemId: l.inventoryItemId,
-      sku: l.sku.trim(),
-      description: l.description.trim() || 'Delivered Item',
-      quantityOrdered: Math.max(0, Number(l.quantityOrdered) || 0),
-      quantityReceived: Math.max(0, Number(l.quantityReceived) || 0),
-      unit: l.unit.trim() || 'Pcs',
-      unitCost: Math.max(0, Number(l.unitCost) || 0),
-    }));
+    const parsedLines: GoodsReceiptLine[] = editLines.slice(0, 10).map((l) => {
+      const base: GoodsReceiptLine = {
+        inventoryItemId: l.inventoryItemId,
+        sku: l.sku.trim(),
+        description: l.description.trim() || 'Delivered Item',
+        quantityOrdered: Math.max(0, round4(Number(l.quantityOrdered) || 0)),
+        quantityReceived: Math.max(0, round4(Number(l.quantityReceived) || 0)),
+        unit: l.unit.trim() || 'Pcs',
+        unitCost: Math.max(0, round4(Number(l.unitCost) || 0)),
+      };
+      if (chosenSupInv && l.supplierInvoiceLineIndex !== undefined) {
+        base.supplierInvoiceLineIndex = l.supplierInvoiceLineIndex;
+      }
+      return base;
+    });
 
     setSavingEdit(true);
     try {
@@ -1049,7 +1084,7 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
                           <input
                             type="number"
                             min="0"
-                            step="0.01"
+                            step="any"
                             value={line.unitCost}
                             onChange={(e) =>
                               setLines((prev) =>
@@ -1215,6 +1250,11 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
                             {item.sku && (
                               <div className="font-mono-nums text-[11px] text-slate-500">
                                 SKU: {item.sku}
+                                {item.supplierInvoiceLineIndex !== undefined && (
+                                  <span className="ml-2 text-blue-700">
+                                    · Bill Line #{item.supplierInvoiceLineIndex + 1}
+                                  </span>
+                                )}
                               </div>
                             )}
                           </td>
@@ -1657,7 +1697,7 @@ export const GoodsReceivedView: React.FC<GoodsReceivedViewProps> = ({
                           <input
                             type="number"
                             min="0"
-                            step="0.01"
+                            step="any"
                             value={line.unitCost}
                             onChange={(e) =>
                               setEditLines((prev) =>

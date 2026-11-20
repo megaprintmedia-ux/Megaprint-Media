@@ -434,7 +434,7 @@ service cloud.firestore {
 
     function isValidJobCost(data, jobId) {
       return data.keys().hasAll(['jobId', 'costType', 'description', 'quantity', 'unitCost', 'totalCost', 'loggedByName', 'ownerUid', 'staffUids', 'createdAt']) &&
-        data.keys().hasOnly(['jobId', 'costType', 'description', 'quantity', 'unitCost', 'totalCost', 'loggedByName', 'ownerUid', 'staffUids', 'createdAt']) &&
+        data.keys().hasOnly(['jobId', 'costType', 'description', 'quantity', 'unitCost', 'totalCost', 'loggedByName', 'inventoryItemId', 'inventoryMovementId', 'sourceType', 'ownerUid', 'staffUids', 'createdAt']) &&
         data.jobId == jobId &&
         isValidId(data.jobId) &&
         data.costType in ['Material', 'Labor', 'Subcontract', 'Overhead'] &&
@@ -443,6 +443,9 @@ service cloud.firestore {
         isNonNegativeNum(data.unitCost) &&
         isNonNegativeNum(data.totalCost) &&
         isNonEmptyStr(data.loggedByName, 120) &&
+        (!('inventoryItemId' in data) || isOptionalStr(data.inventoryItemId, 128)) &&
+        (!('inventoryMovementId' in data) || isOptionalStr(data.inventoryMovementId, 128)) &&
+        (!('sourceType' in data) || data.sourceType in ['manual', 'stock_issue', 'stock_return']) &&
         isValidId(data.ownerUid) &&
         isBoundedUidList(data.staffUids) &&
         data.createdAt is timestamp;
@@ -714,7 +717,8 @@ service cloud.firestore {
           'standardNetAmount', 'zeroRatedAmount', 'exemptAmount',
           'netAmount', 'vatAmount', 'grossAmount', 'whtApplicable', 'whtRate',
           'whtAmount', 'whtRemitted', 'amountPaid', 'balanceDue',
-          'status', 'paymentMethod', 'paymentReference', 'notes',
+          'status', 'paymentMethod', 'paymentReference', 'lastPaymentDate',
+          'linkedGrnIds', 'stockClassificationAudit', 'notes',
           'ownerUid', 'viewerUids', 'isVatReportable', 'vatViewerUids', 'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.recordNumber, 40) &&
@@ -753,6 +757,9 @@ service cloud.firestore {
         data.status in ['Unpaid', 'Part Paid', 'Paid', 'Disputed'] &&
         (!('paymentMethod' in data) || isOptionalStr(data.paymentMethod, 60)) &&
         (!('paymentReference' in data) || isOptionalStr(data.paymentReference, 120)) &&
+        (!('lastPaymentDate' in data) || isOptionalStr(data.lastPaymentDate, 32)) &&
+        (!('linkedGrnIds' in data) || (data.linkedGrnIds is list && data.linkedGrnIds.size() <= 20)) &&
+        (!('stockClassificationAudit' in data) || isOptionalStr(data.stockClassificationAudit, 500)) &&
         (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
         isValidId(data.ownerUid) &&
         isBoundedUidList(data.viewerUids) &&
@@ -803,15 +810,29 @@ service cloud.firestore {
           'recipientOrReason', 'loggedByName', 'ownerUid', 'staffUids', 'createdAt'
         ]) &&
         data.keys().hasOnly([
-          'itemId', 'movementType', 'quantityDelta', 'resultingQty', 'jobId',
-          'jobNumber', 'recipientOrReason', 'loggedByName', 'ownerUid',
-          'staffUids', 'createdAt'
+          'itemId', 'sku', 'itemName', 'movementType', 'quantityDelta',
+          'resultingQty', 'unitCost', 'totalCost', 'movementDate',
+          'movedQuantity', 'locationFrom', 'locationTo', 'supplierInvoiceId',
+          'grnId', 'reversedMovementId', 'jobId', 'jobNumber',
+          'recipientOrReason', 'loggedByName', 'ownerUid', 'staffUids', 'createdAt'
         ]) &&
         data.itemId == itemId &&
         isValidId(data.itemId) &&
-        data.movementType in ['Stock In', 'Issue to Job', 'Sample Out', 'Sample Return', 'Adjustment'] &&
-        data.quantityDelta is number && data.quantityDelta != 0 &&
+        (!('sku' in data) || isOptionalStr(data.sku, 40)) &&
+        (!('itemName' in data) || isOptionalStr(data.itemName, 160)) &&
+        data.movementType in ['Stock In', 'Issue to Job', 'Material Return', 'Location Transfer', 'Sample Out', 'Sample Return', 'Adjustment'] &&
+        data.quantityDelta is number &&
+        ((data.movementType == 'Location Transfer' && data.quantityDelta == 0) || data.quantityDelta != 0) &&
         isNonNegativeNum(data.resultingQty) &&
+        (!('unitCost' in data) || isNonNegativeNum(data.unitCost)) &&
+        (!('totalCost' in data) || isNonNegativeNum(data.totalCost)) &&
+        (!('movementDate' in data) || isOptionalStr(data.movementDate, 32)) &&
+        (!('movedQuantity' in data) || isNonNegativeNum(data.movedQuantity)) &&
+        (!('locationFrom' in data) || isOptionalStr(data.locationFrom, 120)) &&
+        (!('locationTo' in data) || isOptionalStr(data.locationTo, 120)) &&
+        (!('supplierInvoiceId' in data) || isOptionalStr(data.supplierInvoiceId, 128)) &&
+        (!('grnId' in data) || isOptionalStr(data.grnId, 128)) &&
+        (!('reversedMovementId' in data) || isOptionalStr(data.reversedMovementId, 128)) &&
         (!('jobId' in data) || isOptionalStr(data.jobId, 128)) &&
         (!('jobNumber' in data) || isOptionalStr(data.jobNumber, 40)) &&
         isNonEmptyStr(data.recipientOrReason, 240) &&
@@ -831,7 +852,7 @@ service cloud.firestore {
           'grnNumber', 'supplierName', 'deliveryNoteRef', 'supplierInvoiceId',
           'supplierInvoiceNo', 'jobId', 'jobNumber', 'receivedDate',
           'receivedByName', 'conditionStatus', 'items', 'totalValue',
-          'postToInventory', 'notes', 'ownerUid', 'staffUids',
+          'postToInventory', 'stockLinkAudit', 'notes', 'ownerUid', 'staffUids',
           'createdAt', 'updatedAt'
         ]) &&
         isNonEmptyStr(data.grnNumber, 40) &&
@@ -847,6 +868,7 @@ service cloud.firestore {
         data.items is list && data.items.size() >= 1 && data.items.size() <= 10 && data.items[0] is map &&
         isNonNegativeNum(data.totalValue) &&
         data.postToInventory is bool &&
+        (!('stockLinkAudit' in data) || isOptionalStr(data.stockLinkAudit, 500)) &&
         (!('notes' in data) || isOptionalStr(data.notes, 1000)) &&
         isValidId(data.ownerUid) &&
         isBoundedUidList(data.staffUids) &&
@@ -1461,7 +1483,7 @@ service cloud.firestore {
           isManagement() ||
           (isAccountsOrManagement() && incoming().diff(existing()).affectedKeys().hasOnly([
             'status', 'amountPaid', 'balanceDue', 'paymentMethod',
-            'paymentReference', 'supplierTaxPin', 'supplierTin', 'supplierVatReg',
+            'paymentReference', 'lastPaymentDate', 'supplierTaxPin', 'supplierTin', 'supplierVatReg',
             'isVatRegistered', 'isVatClaimable', 'whtApplicable', 'whtRate',
             'whtAmount', 'whtRemitted', 'notes', 'dueDate', 'isVatReportable',
             'vatViewerUids', 'updatedAt'
@@ -1522,6 +1544,15 @@ service cloud.firestore {
         allow update: if false;
         allow delete: if isManagement() && isValidId(itemId) && isValidId(movementId);
       }
+    }
+
+    // 13b. Collection Group List Support for Inventory Movements
+    match /{path=**}/movements/{movementId} {
+      allow list: if isVerifiedSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        (resource.data.staffUids is list && resource.data.staffUids.size() <= 10 && request.auth.uid in resource.data.staffUids)
+      );
     }
 
     // 14. Goods Received Notes (GRN)
