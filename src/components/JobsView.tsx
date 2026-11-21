@@ -22,6 +22,8 @@ import {
   formatMoney,
 } from '../utils/vat';
 import { DailyJobWorksheet } from './DailyWorksheets';
+import { DayViewControls } from './DayViewControls';
+import { DateSort, datedRecords, dayLabel, getJobDay } from '../utils/dateViews';
 import { StatusText } from './StatusText';
 
 interface JobsViewProps {
@@ -89,6 +91,8 @@ export const JobsView: React.FC<JobsViewProps> = ({
   onOpenJobCard,
 }) => {
   const [search, setSearch] = useState('');
+  const [jobDay, setJobDay] = useState('');
+  const [dateSort, setDateSort] = useState<DateSort>('newest');
   const [categoryFilter, setCategoryFilter] = useState<'All' | ServiceCategory>('All');
   const [statusFilter, setStatusFilter] = useState<'All' | JobStatus>('All');
   const [showCreate, setShowCreate] = useState(false);
@@ -157,7 +161,7 @@ export const JobsView: React.FC<JobsViewProps> = ({
 
   const canCreate = role === 'management' || role === 'sales';
 
-  const filteredJobs = useMemo(() => {
+  const matchingJobs = useMemo(() => {
     const q = search.trim().toLowerCase();
     return jobs.filter((job) => {
       if (categoryFilter !== 'All' && job.category !== categoryFilter) return false;
@@ -173,6 +177,8 @@ export const JobsView: React.FC<JobsViewProps> = ({
       return true;
     });
   }, [jobs, search, categoryFilter, statusFilter]);
+
+  const filteredJobs = useMemo(() => datedRecords(matchingJobs, j => getJobDay(j).date, jobDay, dateSort), [matchingJobs, jobDay, dateSort]);
 
   const numericQty = Math.max(1, Number(quantity) || 1);
   const numericUnitPrice = Math.max(0, Number(unitPrice) || 0);
@@ -331,6 +337,7 @@ export const JobsView: React.FC<JobsViewProps> = ({
         )}
       </div>
 
+      <DayViewControls label="Jobs" dates={matchingJobs.map(j => getJobDay(j).date)} day={jobDay} onDayChange={setJobDay} sort={dateSort} onSortChange={setDateSort} />
       {/* Main Content */}
       {mode === 'job-cards' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -356,6 +363,7 @@ export const JobsView: React.FC<JobsViewProps> = ({
                       </span>
                       <StatusText status={job.status} />
                     </div>
+                    <div className="text-xs text-slate-600">{getJobDay(job).label}: {dayLabel(getJobDay(job).date)} · Due {job.dueDate || 'Not set'}</div>
                     <h3 className="font-display text-sm font-semibold text-slate-900 line-clamp-2">
                       {job.title}
                     </h3>
@@ -440,7 +448,7 @@ export const JobsView: React.FC<JobsViewProps> = ({
                     <th className="py-2.5 px-4">Client &amp; Job Description</th>
                     <th className="py-2.5 px-4">Category</th>
                     <th className="py-2.5 px-4">Stage</th>
-                    <th className="py-2.5 px-4">Due Date</th>
+                    <th className="py-2.5 px-4">Job Date / Due Date</th>
                     {role !== 'production' && (
                       <>
                         <th className="py-2.5 px-4 text-right">Net (Excl. VAT)</th>
@@ -476,7 +484,9 @@ export const JobsView: React.FC<JobsViewProps> = ({
                           <StatusText status={job.status} />
                         </td>
                         <td className="py-3 px-4 font-mono-nums text-xs text-slate-600 whitespace-nowrap">
-                          {job.dueDate || '—'}
+                          <div>{dayLabel(getJobDay(job).date)}</div>
+                          <div className="text-[10px] text-slate-400">{getJobDay(job).label}</div>
+                          <div className="mt-1">Due {job.dueDate || 'Not set'}</div>
                         </td>
                         {role !== 'production' && (
                           <>
