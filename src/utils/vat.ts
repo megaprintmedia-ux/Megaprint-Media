@@ -187,10 +187,9 @@ export function calculateJobCommission(params: {
 }): number {
   const rate = Math.max(0, Math.min(50, Number(params.commissionRatePct) || 0));
   if (rate <= 0) return 0;
-  const base =
-    params.commissionBasis === 'gross_profit'
-      ? Math.max(0, params.grossProfit || 0)
-      : Math.max(0, params.netTotal || 0);
+  // Commission is earned on job gross profit BEFORE deducting commission.
+  // Legacy callers may still supply net_sales; it must not switch the policy.
+  const base = Math.max(0, Number(params.grossProfit) || 0);
   return round2((base * rate) / 100);
 }
 
