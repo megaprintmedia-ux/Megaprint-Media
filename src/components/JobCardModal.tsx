@@ -3,6 +3,7 @@ import { CheckSquare, Plus, Printer, Square, X } from 'lucide-react';
 import {
   CommissionBasis,
   CommissionStatus,
+  CommissionRecord,
   CompanySettings,
   CostType,
   Job,
@@ -20,12 +21,14 @@ import {
 import { computeJobActualCostFromEntries } from '../utils/inventoryAccounting';
 import { BrandLogo } from './BrandLogo';
 import { StatusText } from './StatusText';
+import { commissionCosting } from '../utils/commissions';
 
 interface JobCardModalProps {
   job: Job;
   settings: CompanySettings;
   role: UserRole;
   users?: UserProfile[];
+  commissionRecords?: CommissionRecord[];
   onClose: () => void;
   onUpdateJob: (
     jobId: string,
@@ -82,6 +85,7 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
   settings,
   role,
   users = [],
+  commissionRecords = [],
   onClose,
   onUpdateJob,
   onUpdateJobCommission,
@@ -145,7 +149,7 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
   };
 
   const defaultBasis: CommissionBasis =
-    job.commissionBasis || settings.defaultCommissionBasis || 'gross_profit';
+    'gross_profit';
   const defaultRate =
     job.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5;
 
@@ -165,7 +169,7 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
       String(job.commissionRatePct ?? settings.defaultCommissionRatePct ?? 5)
     );
     setCommBasisInput(
-      job.commissionBasis || settings.defaultCommissionBasis || 'gross_profit'
+      'gross_profit'
     );
     setCommAmountInput(String(job.commissionAmount ?? 0));
   }, [
@@ -194,6 +198,7 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
       ? { ...job, actualCostTotal: displayActualCost }
       : job;
   const costing = calculateJobCosting(effectiveJobForCosting);
+  const commissionCost = commissionCosting(effectiveJobForCosting, commissionRecords);
   const stockIssueTotal = costs
     .filter((c) => c.sourceType === 'stock_issue')
     .reduce((a, c) => a + (c.totalCost || 0), 0);
@@ -652,6 +657,7 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                   )}
 
                   {/* Sales Rep & Commission Trace */}
+                  {commissionRecords.some(r => r.linkedJobId === job.id) && <p className="mt-3 text-sm text-amber-800">Source-sheet gross profit before commission: {formatMoney(commissionCost.grossProfit, settings.currency)}. Sales {formatMoney(commissionCost.salesAmount, settings.currency)} less production {formatMoney(commissionCost.productionCost, settings.currency)}. Tax and settlement details await review.</p>}
                   {(() => {
                     const assignedRepUser = job.assignedSalesUid
                       ? users.find((u) => u.uid === job.assignedSalesUid)
@@ -707,7 +713,7 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                                     setCommRateInput(val);
                                     const nextAmt = calculateJobCommission({
                                       netTotal: job.netTotal,
-                                      grossProfit: costing.grossProfit,
+                                      grossProfit: commissionCost.grossProfit,
                                       commissionRatePct: Number(val) || 0,
                                       commissionBasis: commBasisInput,
                                     });
@@ -723,7 +729,7 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                                   setCommBasisInput(nextBasis);
                                   const nextAmt = calculateJobCommission({
                                     netTotal: job.netTotal,
-                                    grossProfit: costing.grossProfit,
+                                    grossProfit: commissionCost.grossProfit,
                                     commissionRatePct: Number(commRateInput) || 0,
                                     commissionBasis: nextBasis,
                                   });
@@ -731,8 +737,7 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                                 }}
                                 className="border border-slate-200 rounded px-2 py-1 text-xs bg-white"
                               >
-                                <option value="gross_profit">% of Job Net Profit</option>
-                                <option value="net_sales">% of Net Sales</option>
+                                <option value="gross_profit">% of Gross Profit Before Commission</option>
                               </select>
                               <div className="flex items-center gap-1 text-xs">
                                 <span className="text-slate-500">Amount</span>
@@ -740,8 +745,8 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                                   type="number"
                                   min="0"
                                   step="0.01"
-                                  value={commAmountInput}
-                                  onChange={(e) => setCommAmountInput(e.target.value)}
+                                  value={calculateJobCommission({netTotal: commissionCost.salesAmount, grossProfit: commissionCost.grossProfit, commissionRatePct: Number(commRateInput), commissionBasis: 'gross_profit'})}
+                                  readOnly
                                   className="w-24 border border-slate-200 rounded px-2 py-1 text-xs font-mono-nums"
                                 />
                               </div>
