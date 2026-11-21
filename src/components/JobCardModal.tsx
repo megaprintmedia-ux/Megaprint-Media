@@ -104,6 +104,45 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
     job.assignedProductionName || ''
   );
   const [savingNotes, setSavingNotes] = useState(false);
+  const [estimateInputs, setEstimateInputs] = useState({
+    estimatedMaterialCost: String(job.estimatedMaterialCost || 0),
+    estimatedLaborCost: String(job.estimatedLaborCost || 0),
+    estimatedSubcontractCost: String(job.estimatedSubcontractCost || 0),
+    estimatedOverheadCost: String(job.estimatedOverheadCost || 0),
+  });
+  const [savingEstimate, setSavingEstimate] = useState(false);
+  const [estimateMessage, setEstimateMessage] = useState('');
+
+  useEffect(() => {
+    setEstimateInputs({
+      estimatedMaterialCost: String(job.estimatedMaterialCost || 0),
+      estimatedLaborCost: String(job.estimatedLaborCost || 0),
+      estimatedSubcontractCost: String(job.estimatedSubcontractCost || 0),
+      estimatedOverheadCost: String(job.estimatedOverheadCost || 0),
+    });
+    setEstimateMessage('');
+  }, [job.id, job.estimatedMaterialCost, job.estimatedLaborCost,
+      job.estimatedSubcontractCost, job.estimatedOverheadCost]);
+
+  const handleSaveEstimate = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (role !== 'management') return;
+    const entries = Object.entries(estimateInputs).map(([key, value]) => [key, Number(value)] as const);
+    if (entries.some(([, value]) => !Number.isFinite(value) || value < 0)) {
+      setEstimateMessage('Enter a valid amount of zero or more for each cost.');
+      return;
+    }
+    setSavingEstimate(true);
+    setEstimateMessage('');
+    try {
+      await onUpdateJob(job.id, Object.fromEntries(entries.map(([key, value]) => [key, Math.round(value * 100) / 100])));
+      setEstimateMessage('Estimate saved.');
+    } catch {
+      setEstimateMessage('Estimate could not be saved. Please try again.');
+    } finally {
+      setSavingEstimate(false);
+    }
+  };
 
   const defaultBasis: CommissionBasis =
     job.commissionBasis || settings.defaultCommissionBasis || 'gross_profit';
@@ -583,6 +622,34 @@ export const JobCardModal: React.FC<JobCardModalProps> = ({
                       </>
                     )}
                   </div>
+
+                  {role === 'management' && (
+                    <form onSubmit={handleSaveEstimate} className="mt-3 rounded-md border border-slate-200 p-4 space-y-3">
+                      <h4 className="text-sm font-semibold text-slate-900">Estimated production costs</h4>
+                      <p className="text-sm text-slate-600">Record expected costs from supplier quotes, material rates and job specifications. Add the calculation and any missing costs to the production notes.</p>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        {([
+                          ['estimatedMaterialCost', 'Estimated materials'],
+                          ['estimatedLaborCost', 'Estimated labour'],
+                          ['estimatedSubcontractCost', 'Estimated subcontracting'],
+                          ['estimatedOverheadCost', 'Estimated overhead'],
+                        ] as const).map(([key, label]) => (
+                          <label key={key} className="text-sm text-slate-600">
+                            {label} ({settings.currency})
+                            <input type="number" min="0" step="0.01" required
+                              value={estimateInputs[key]}
+                              onChange={(event) => { setEstimateInputs(previous => ({ ...previous, [key]: event.target.value })); setEstimateMessage(''); }}
+                              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900" />
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-sm text-slate-600">These estimates do not post expenses or payments. A zero amount may mean a cost has not yet been estimated.</p>
+                      <button type="submit" disabled={savingEstimate} className="rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
+                        {savingEstimate ? 'Saving estimate…' : 'Save Estimate'}
+                      </button>
+                      {estimateMessage && <p role="status" className="text-sm text-slate-700">{estimateMessage}</p>}
+                    </form>
+                  )}
 
                   {/* Sales Rep & Commission Trace */}
                   {(() => {
