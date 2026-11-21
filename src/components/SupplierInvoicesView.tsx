@@ -12,6 +12,9 @@ import {
 } from 'lucide-react';
 import {
   ChartAccount,
+  CashBookEntry,
+  InventoryItem,
+  GoodsReceipt,
   CompanySettings,
   DEFAULT_ZIM_CASH_ACCOUNTS,
   InvoiceLine,
@@ -34,7 +37,25 @@ import {
   round2,
   summarizeTaxBreakdown,
 } from '../utils/vat';
+import { DayViewControls } from './DayViewControls';
+import { DateSort, datedRecords, dayLabel, harareDay } from '../utils/dateViews';
+import type { LineClassificationEdit, GrnLinkAssignment } from '../utils/inventoryAccounting';
 import { StatusText } from './StatusText';
+
+function SupplierPaymentHistory({ entries, currency, accounts }: { entries: CashBookEntry[]; currency: string; accounts: ChartAccount[] }) {
+  const [day, setDay] = useState('');
+  const [sort, setSort] = useState<DateSort>('newest');
+  const [search, setSearch] = useState('');
+  const matching = entries.filter(e => `${e.counterparty} ${e.entryNumber} ${e.reference} ${e.linkedDocRef}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const visible = datedRecords(matching, e => e.entryDate, day, sort);
+  return <div className="space-y-4">
+    <h2 className="font-semibold">Supplier Payments by Day</h2>
+    <input aria-label="Search supplier payments" placeholder="Search supplier, voucher or payment reference..." value={search} onChange={e => setSearch(e.target.value)} className="border border-slate-200 rounded px-3 py-2 text-sm w-full max-w-lg" />
+    <DayViewControls label="Supplier payments" dates={matching.map(e => e.entryDate)} day={day} onDayChange={setDay} sort={sort} onSortChange={setSort} />
+    <p className="text-xs text-slate-500">{visible.length} recorded cash-book payments. Historical settlements without cash-book entries remain on their supplier invoices.</p>
+    <div className="bg-white border border-slate-200 rounded-lg overflow-x-auto"><table className="w-full text-xs text-left"><thead className="bg-slate-50"><tr>{['Payment date', 'Cash book #', 'Supplier', 'Invoice / voucher reference', 'Paid from', 'Amount', 'Payment reference'].map(h => <th key={h} className="p-3">{h}</th>)}</tr></thead><tbody>{visible.length ? visible.map(e => <tr key={e.id} className="border-t border-slate-100"><td className="p-3 whitespace-nowrap">{dayLabel(e.entryDate)}</td><td className="p-3">{e.entryNumber}</td><td className="p-3">{e.counterparty}</td><td className="p-3">{e.linkedDocRef || 'Not linked'}</td><td className="p-3">{e.account}</td><td className="p-3 font-semibold">{formatMoney(e.amount, accounts.find(a => a.name === e.account)?.currency || currency)}</td><td className="p-3">{e.reference || 'Not recorded'}</td></tr>) : <tr><td colSpan={7} className="p-8 text-center text-slate-500">No supplier payments match this day.</td></tr>}</tbody></table></div>
+  </div>;
+}
 
 interface SupplierInvoicesViewProps {
   role: UserRole;
@@ -45,6 +66,10 @@ interface SupplierInvoicesViewProps {
   suppliers?: Supplier[];
   openingBalances?: OpeningBalanceRecord[];
   jobs: Job[];
+  cashBookEntries?: CashBookEntry[];
+  inventoryItems?: InventoryItem[];
+  goodsReceipts?: GoodsReceipt[];
+  onClassifyAndLinkStockBill?: (params: { supplierInvoice: SupplierInvoice; lineEdits: LineClassificationEdit[]; selectedGrnIds: string[]; grnAssignments?: GrnLinkAssignment[] }) => Promise<unknown>;
   onCreateSupplier?: (
     input: Omit<Supplier, 'id' | 'ownerUid' | 'staffUids' | 'createdAt' | 'updatedAt'>
   ) => Promise<string | undefined>;
@@ -94,6 +119,7 @@ interface SupplierInvoicesViewProps {
     options?: {
       whtDeducted?: number;
       whtRemitted?: boolean;
+      paymentDate?: string;
     }
   ) => Promise<void>;
   onUpdateVatStatus: (
@@ -156,6 +182,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
   suppliers = [],
   openingBalances = [],
   jobs,
+  cashBookEntries = [],
   onCreateSupplier,
   onCreateSupplierInvoice,
   onUpdateSupplierInvoice,
@@ -174,11 +201,15 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
     return active.length > 0 ? active : [...DEFAULT_ZIM_CASH_ACCOUNTS];
   }, [chartOfAccounts]);
 
-  const [activeSubTab, setActiveSubTab] = useState<'invoices' | 'directory' | 'opening'>(
+  const [activeSubTab, setActiveSubTab] = useState<'invoices' | 'directory' | 'opening' | 'payments'>(
     'invoices'
   );
   const [statusFilter, setStatusFilter] = useState<'All' | SupplierInvoiceStatus>('All');
   const [searchQuery, setSearchQuery] = useState('');
+  const [invoiceDay, setInvoiceDay] = useState('');
+  const [dateSort, setDateSort] = useState<DateSort>('newest');
+  const [invoiceDateBasis, setInvoiceDateBasis] = useState<'invoice' | 'payment' | 'due'>('invoice');
+  const supplierDay = (inv: SupplierInvoice) => invoiceDateBasis === 'payment' ? inv.lastPaymentDate || '' : invoiceDateBasis === 'due' ? inv.dueDate : inv.invoiceDate;
   const [supplierSearch, setSupplierSearch] = useState('');
   const [showCreateSupplier, setShowCreateSupplier] = useState(false);
   const [newSupName, setNewSupName] = useState('');
@@ -224,6 +255,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
 
   // Payment modal state
   const [payAmount, setPayAmount] = useState('');
+  const [payDate, setPayDate] = useState(harareDay);
   const [payMethod, setPayMethod] = useState('Bank Transfer / RTGS');
   const [payAccount, setPayAccount] = useState(
     cashBookAccounts[0] || DEFAULT_ZIM_CASH_ACCOUNTS[0]
@@ -474,7 +506,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
     };
   }, [supplierInvoices]);
 
-  const filteredInvoices = useMemo(() => {
+  const matchingInvoices = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return supplierInvoices.filter((inv) => {
       if (statusFilter !== 'All' && inv.status !== statusFilter) return false;
@@ -490,6 +522,8 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
       );
     });
   }, [supplierInvoices, statusFilter, searchQuery]);
+
+  const filteredInvoices = useMemo(() => datedRecords(matchingInvoices, supplierDay, invoiceDay, dateSort), [matchingInvoices, invoiceDateBasis, invoiceDay, dateSort]);
 
   const filteredSuppliers = useMemo(() => {
     const q = supplierSearch.trim().toLowerCase();
@@ -626,6 +660,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
   };
 
   const openPaymentModal = (inv: SupplierInvoice) => {
+    setPayDate(harareDay());
     setPaymentModalInv(inv);
     setPayAccount(cashBookAccounts[0] || DEFAULT_ZIM_CASH_ACCOUNTS[0]);
     setPayRef('');
@@ -654,9 +689,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
         payMethod,
         payRef,
         payAccount,
-        whtDeducted > 0
-          ? { whtDeducted, whtRemitted: payWhtRemitted }
-          : undefined
+        { paymentDate: payDate, ...(whtDeducted > 0 ? { whtDeducted, whtRemitted: payWhtRemitted } : {}) }
       );
       setPaymentModalInv(null);
       setPayAmount('');
@@ -812,6 +845,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
             >
               Supplier Tax Invoices ({supplierInvoices.length})
             </button>
+            <button type="button" onClick={() => setActiveSubTab('payments')} className={`px-3 py-1.5 rounded text-xs font-medium ${effectiveSubTab === 'payments' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}>Supplier Payments</button>
             <button
               type="button"
               onClick={() => setActiveSubTab('directory')}
@@ -848,7 +882,9 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
         </div>
       )}
 
-      {effectiveSubTab === 'directory' && !isVatOnly ? (
+      {effectiveSubTab === 'payments' && !isVatOnly ? (
+        <SupplierPaymentHistory entries={cashBookEntries.filter(e => e.category === 'Supplier Payment' && e.entryType === 'Payment (Outflow)')} currency={settings.currency} accounts={chartOfAccounts} />
+      ) : effectiveSubTab === 'directory' && !isVatOnly ? (
         <div className="space-y-4">
           <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3">
             <div className="relative">
@@ -1070,6 +1106,8 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
         </div>
       </div>
 
+      <div className="text-xs text-slate-700"><label>Date basis <select aria-label="Supplier invoice date basis" value={invoiceDateBasis} onChange={e => setInvoiceDateBasis(e.target.value as 'invoice' | 'payment' | 'due')} className="ml-2 border rounded px-2 py-1.5 bg-white"><option value="invoice">Invoice date</option><option value="payment">Last payment date</option><option value="due">Due date</option></select></label></div>
+      <DayViewControls label="Supplier invoices" dates={matchingInvoices.map(supplierDay)} day={invoiceDay} onDayChange={setInvoiceDay} sort={dateSort} onSortChange={setDateSort} />
       {/* Table */}
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
         {filteredInvoices.length === 0 ? (
@@ -1085,6 +1123,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                   <th className="py-2.5 px-4">Voucher / Vendor Inv #</th>
                   <th className="py-2.5 px-4">Supplier &amp; ZIMRA Tax #</th>
                   <th className="py-2.5 px-4">Category &amp; Job</th>
+                  <th className="py-2.5 px-4">Invoice / Payment Dates</th>
                   <th className="py-2.5 px-4">Status</th>
                   <th className="py-2.5 px-4 text-right">Net</th>
                   <th className="py-2.5 px-4 text-right">Input VAT</th>
@@ -1132,6 +1171,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
                           {inv.dueDate}
                         </div>
                       </td>
+                      <td className="py-3 px-4 text-xs whitespace-nowrap"><div>Invoice {dayLabel(inv.invoiceDate)}</div><div className="mt-1">Paid {inv.lastPaymentDate ? dayLabel(inv.lastPaymentDate) : 'Not recorded'}</div></td>
                       <td className="py-3 px-4">
                         <StatusText status={inv.status} />
                       </td>
@@ -2053,6 +2093,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
               </button>
             </div>
             <form onSubmit={handlePaymentSubmit} className="p-5 space-y-4">
+              <label className="block text-xs font-medium text-slate-700">Payment date<input type="date" aria-label="Supplier payment date" required value={payDate} onChange={e => setPayDate(e.target.value)} className="block w-full border border-slate-200 rounded-md px-3 py-2 text-sm mt-1" /></label>
               <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded p-2.5 flex justify-between">
                 <div>
                   Supplier:{' '}
