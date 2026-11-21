@@ -21,6 +21,8 @@ import {
   UserRole,
 } from '../types/erp';
 import { formatMoney, round2 } from '../utils/vat';
+import { DayViewControls } from './DayViewControls';
+import { validDay } from '../utils/dateViews';
 import { StatusText } from './StatusText';
 
 interface CashBookViewProps {
@@ -115,7 +117,8 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
   const [accountFilter, setAccountFilter] = useState<'All' | CashBookAccount>('All');
   const [typeFilter, setTypeFilter] = useState<'All' | CashBookEntryType>('All');
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortOrder, setSortOrder] = useState<'chronological' | 'latest'>('chronological');
+  const [entryDay, setEntryDay] = useState('');
+  const [sortOrder, setSortOrder] = useState<'chronological' | 'latest'>('latest');
   const [showCreate, setShowCreate] = useState(false);
 
   // Create form state
@@ -249,13 +252,16 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
       };
     });
 
-    return sortOrder === 'latest' ? [...withBalance].reverse() : withBalance;
+    // Calculate balances using all earlier rows before selecting a day.
+    const visible = withBalance.filter(r => !entryDay || validDay(r.entry.entryDate) === entryDay);
+    return sortOrder === 'latest' ? [...visible].reverse() : visible;
   }, [
     cashBookEntries,
     accountFilter,
     typeFilter,
     searchQuery,
     sortOrder,
+    entryDay,
     activeAccounts,
     accountBalances,
   ]);
@@ -264,7 +270,7 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
     const totalInflows = round2(ledgerRows.reduce((acc, r) => acc + r.debit, 0));
     const totalOutflows = round2(ledgerRows.reduce((acc, r) => acc + r.credit, 0));
     const openingTotal =
-      typeFilter === 'All' && !searchQuery.trim()
+      !entryDay && typeFilter === 'All' && !searchQuery.trim()
         ? accountFilter === 'All'
           ? round2(activeAccounts.reduce((sum, a) => sum + a.openingBalance, 0))
           : round2(accountBalances[accountFilter]?.openingBalance || 0)
@@ -274,6 +280,7 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
     return { totalInflows, totalOutflows, netBalance, unreconciledCount };
   }, [
     ledgerRows,
+    entryDay,
     typeFilter,
     searchQuery,
     accountFilter,
@@ -447,7 +454,7 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <div className="bg-white border border-slate-200 rounded-lg p-5">
           <div className="text-xs font-medium text-slate-500">
-            Net Cash &amp; Bank Position
+            {entryDay ? 'Net Movement for Selected Day' : 'Net Cash & Bank Position'}
           </div>
           <div
             className={`mt-2 font-mono-nums text-2xl font-semibold ${
@@ -546,6 +553,7 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
         })}
       </div>
 
+      <DayViewControls label="Cash book" dates={cashBookEntries.map(e => e.entryDate)} day={entryDay} onDayChange={setEntryDay} />
       {/* Filter & Actions Bar */}
       <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-wrap items-center justify-between gap-3 no-print">
         <div className="flex flex-wrap items-center gap-2">

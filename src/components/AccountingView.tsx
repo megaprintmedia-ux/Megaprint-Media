@@ -32,6 +32,8 @@ import {
   computeAccountingLedger,
 } from '../utils/inventoryAccounting';
 import { DailyExpenseWorksheet } from './DailyWorksheets';
+import { DayViewControls } from './DayViewControls';
+import { DateSort, datedRecords } from '../utils/dateViews';
 import { StatusText } from './StatusText';
 
 interface AccountingViewProps {
@@ -118,6 +120,9 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   const isVatOnly = role === 'accounts' && taxScope === 'vat_only';
   const isManagement = role === 'management' && !isVatOnly;
 
+  const [expenseDay, setExpenseDay] = useState('');
+  const [dateSort, setDateSort] = useState<DateSort>('newest');
+  const visibleExpenses = useMemo(() => datedRecords(expenses, e => e.expenseDate, expenseDay, dateSort), [expenses, expenseDay, dateSort]);
   const [activeTab, setActiveTab] = useState<'vat' | 'pnl' | 'expenses'>('vat');
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
@@ -1081,9 +1086,10 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
       {effectiveTab === 'expenses' && (
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           {!isVatOnly && <DailyExpenseWorksheet expenses={expenses} cashBookEntries={cashBookEntries} jobs={jobs} settings={settings} />}
-          {expenses.length === 0 ? (
+          <DayViewControls label="Expenses" dates={expenses.map(e => e.expenseDate)} day={expenseDay} onDayChange={setExpenseDay} sort={dateSort} onSortChange={setDateSort} />
+          {visibleExpenses.length === 0 ? (
             <div className="p-10 text-center text-sm text-slate-500">
-              No supplier bills or operating expenses logged yet.
+              No expenses match this day. Select All dates to see the full expense ledger.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -1103,7 +1109,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
-                  {expenses.map((exp) => {
+                  {visibleExpenses.map((exp) => {
                     const t =
                       exp.vatTreatment ?? (exp.vatAmount > 0 ? 'standard' : 'exempt');
                     return (

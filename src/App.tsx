@@ -487,6 +487,7 @@ const ErpWorkspace: React.FC = () => {
                   suppliers={erp.suppliers}
                   openingBalances={erp.openingBalances}
                   jobs={erp.jobs}
+                  cashBookEntries={effectiveTaxScope === 'vat_only' ? [] : erp.cashBookEntries}
                   inventoryItems={erp.inventoryItems}
                   goodsReceipts={erp.goodsReceipts}
                   onCreateSupplier={erp.createSupplier}
