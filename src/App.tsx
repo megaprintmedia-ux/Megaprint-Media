@@ -390,6 +390,7 @@ const ErpWorkspace: React.FC = () => {
                   users={erp.users}
                   settings={erp.settings}
                   jobs={erp.jobs}
+                  invoices={erp.invoices}
                   clients={erp.clients}
                   openCreateModalSignal={newJobSignal}
                   onCreateJob={erp.createJob}
@@ -598,6 +599,7 @@ const ErpWorkspace: React.FC = () => {
                   notes={erp.notes}
                   chartOfAccounts={erp.chartOfAccounts}
                   onOpenJobCard={setSelectedJobCard}
+                  commissionRecords={erp.commissionRecords}
                   onUpdateJobCommission={erp.updateJobCommission}
                   onPayJobCommission={erp.payJobCommission}
                   onNavigate={setActiveSection}
@@ -606,6 +608,7 @@ const ErpWorkspace: React.FC = () => {
 
               {visibleSection === 'settings' && (
                 <SettingsTeamView
+                  onImportCommissionSheet={erp.importCommissionSheet}
                   settings={erp.settings}
                   users={erp.users}
                   userInvites={erp.userInvites}
@@ -614,6 +617,7 @@ const ErpWorkspace: React.FC = () => {
                   onUpdateSettings={erp.updateCompanySettings}
                   onUpdateUserAccess={erp.updateUserAccess}
                   onSyncZimraVatScope={erp.syncZimraVatScope}
+                  commissionRecords={erp.commissionRecords}
                   onUpdateJobCommission={erp.updateJobCommission}
                   onCreateChartAccount={erp.createChartAccount}
                   onUpdateChartAccount={erp.updateChartAccount}
@@ -654,6 +658,7 @@ const ErpWorkspace: React.FC = () => {
           users={erp.users}
           onClose={() => setSelectedJobCard(null)}
           onUpdateJob={erp.updateJob}
+          commissionRecords={erp.commissionRecords}
           onUpdateJobCommission={erp.updateJobCommission}
           onAddCostEntry={erp.addJobCostEntry}
           subscribeJobCosts={erp.subscribeJobCosts}
