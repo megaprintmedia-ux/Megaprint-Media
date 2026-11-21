@@ -1828,8 +1828,8 @@ service cloud.firestore {
         isFiniteNum(d.commissionAmount) && d.commissionAmount >= 0 &&
         d.grossProfitBeforeCommission - (d.salesAmount - d.productionCost) >= -0.011 &&
         d.grossProfitBeforeCommission - (d.salesAmount - d.productionCost) <= 0.011 &&
-        d.commissionAmount - ((d.grossProfitBeforeCommission > 0 ? d.grossProfitBeforeCommission : 0) * d.commissionRatePct / 100) >= -0.011 &&
-        d.commissionAmount - ((d.grossProfitBeforeCommission > 0 ? d.grossProfitBeforeCommission : 0) * d.commissionRatePct / 100) <= 0.011 &&
+        d.commissionAmount - ((d.grossProfitBeforeCommission > 0 ? d.grossProfitBeforeCommission : 0) * d.commissionRatePct / 100.0) >= -0.011 &&
+        d.commissionAmount - ((d.grossProfitBeforeCommission > 0 ? d.grossProfitBeforeCommission : 0) * d.commissionRatePct / 100.0) <= 0.011 &&
         d.commissionBasis == 'gross_profit' && d.commissionStatus in ['Pending','Earned','Approved','Paid'] &&
         isOptionalStr(d.linkedJobId,128) && isOptionalStr(d.linkedJobNumber,120) && d.reviewRequired is bool &&
         isNonEmptyStr(d.ownerUid,128) && isBoundedUidList(d.viewerUids);
