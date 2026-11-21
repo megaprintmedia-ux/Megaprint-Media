@@ -23,6 +23,8 @@ import {
   summarizeTaxBreakdown,
 } from '../utils/vat';
 import { BrandLogo } from './BrandLogo';
+import { DayViewControls } from './DayViewControls';
+import { DateSort, datedRecords } from '../utils/dateViews';
 import { StatusText } from './StatusText';
 
 interface InvoicesVatViewProps {
@@ -128,6 +130,8 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
     return active.length > 0 ? active : [...DEFAULT_ZIM_CASH_ACCOUNTS];
   }, [chartOfAccounts]);
 
+  const [invoiceDay, setInvoiceDay] = useState('');
+  const [dateSort, setDateSort] = useState<DateSort>('newest');
   const [statusFilter, setStatusFilter] = useState<'All' | Invoice['status']>('All');
   const [showCreate, setShowCreate] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
@@ -266,9 +270,8 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
   );
 
   const filteredInvoices = useMemo(() => {
-    if (statusFilter === 'All') return invoices;
-    return invoices.filter((i) => i.status === statusFilter);
-  }, [invoices, statusFilter]);
+    return datedRecords(invoices.filter(i => statusFilter === 'All' || i.status === statusFilter), i => i.issueDate, invoiceDay, dateSort);
+  }, [invoices, statusFilter, invoiceDay, dateSort]);
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -546,6 +549,7 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
         )}
       </div>
 
+      <DayViewControls label="Customer invoices" dates={invoices.filter(i => statusFilter === 'All' || i.status === statusFilter).map(i => i.issueDate)} day={invoiceDay} onDayChange={setInvoiceDay} sort={dateSort} onSortChange={setDateSort} />
       {/* Invoices Table */}
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden no-print">
         {filteredInvoices.length === 0 ? (
