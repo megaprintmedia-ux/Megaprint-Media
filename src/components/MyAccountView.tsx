@@ -13,6 +13,7 @@ import {
 import {
   ChartAccount,
   CommissionBasis,
+  CommissionRecord,
   CommissionStatus,
   CompanySettings,
   DEFAULT_ZIM_CASH_ACCOUNTS,
@@ -27,6 +28,7 @@ import {
   UserRole,
 } from '../types/erp';
 import { calculateJobCosting, formatMoney, round2 } from '../utils/vat';
+import { formulaCommission } from '../utils/commissions';
 import { StatusText } from './StatusText';
 
 interface MyAccountViewProps {
@@ -35,6 +37,7 @@ interface MyAccountViewProps {
   settings: CompanySettings;
   users: UserProfile[];
   jobs: Job[];
+  commissionRecords?: CommissionRecord[];
   invoices: Invoice[];
   employees: Employee[];
   timeEntries: TimeEntry[];
@@ -75,6 +78,7 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
   settings,
   users,
   jobs,
+  commissionRecords = [],
   invoices,
   employees,
   timeEntries,
@@ -168,8 +172,11 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
       }
     });
 
+    commissionRecords.forEach(r => {
+      if (!map.has(r.marketerUid)) map.set(r.marketerUid, { key: r.marketerUid, uid: r.marketerUid, name: r.marketerName, role: 'sales', subtitle: 'Sales & Marketing', commissionRatePct: r.commissionRatePct });
+    });
     return Array.from(map.values());
-  }, [profile, users, jobs, settings.defaultCommissionRatePct]);
+  }, [profile, users, jobs, commissionRecords, settings.defaultCommissionRatePct]);
 
   const salesMemberOptions = useMemo(
     () => memberOptions.filter((m) => m.role === 'sales'),
@@ -220,9 +227,9 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
 
   const allSalesTeamJobs = useMemo(() => {
     return jobs.filter(
-      (j) => j.status !== 'Cancelled' && isJobSalesTeamAttributed(j)
+      (j) => j.status !== 'Cancelled' && isJobSalesTeamAttributed(j) && !commissionRecords.some(r => r.linkedJobId === j.id)
     );
-  }, [jobs, knownUsersByUid]);
+  }, [jobs, knownUsersByUid, commissionRecords]);
 
   // Filter jobs belonging to selected Sales member (or all Sales Team)
   const memberSalesJobs = useMemo(() => {
@@ -258,6 +265,8 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
     );
   }, [memberSalesJobs, statusFilter]);
 
+  const memberCommissionRecords = useMemo(() => commissionRecords.filter(r => isAllTeam || r.marketerUid === effectiveSelection), [commissionRecords, isAllTeam, effectiveSelection]);
+  const visibleCommissionRecords = memberCommissionRecords.filter(r => statusFilter === 'All' || r.commissionStatus === statusFilter);
   const commissionStats = useMemo(() => {
     let totalNetSales = 0;
     let pendingAmount = 0;
@@ -266,7 +275,7 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
 
     memberSalesJobs.forEach((j) => {
       totalNetSales = round2(totalNetSales + (j.netTotal || 0));
-      const amt = round2(j.commissionAmount || 0);
+      const amt = j.commissionStatus === 'Paid' ? round2(j.commissionAmount || 0) : formulaCommission(j);
       const st = j.commissionStatus || 'Pending';
       if (st === 'Paid') {
         paidAmount = round2(paidAmount + amt);
@@ -277,14 +286,20 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
       }
     });
 
+    memberCommissionRecords.forEach(r => {
+      totalNetSales = round2(totalNetSales + r.salesAmount);
+      if (r.commissionStatus === 'Paid') paidAmount = round2(paidAmount + r.commissionAmount);
+      else if (r.commissionStatus === 'Earned' || r.commissionStatus === 'Approved') earnedReadyAmount = round2(earnedReadyAmount + r.commissionAmount);
+      else pendingAmount = round2(pendingAmount + r.commissionAmount);
+    });
     return {
-      jobCount: memberSalesJobs.length,
+      jobCount: memberSalesJobs.length + memberCommissionRecords.length,
       totalNetSales,
       pendingAmount,
       earnedReadyAmount,
       paidAmount,
     };
-  }, [memberSalesJobs]);
+  }, [memberSalesJobs, memberCommissionRecords]);
 
   // Match HR employee profile
   const matchedEmployee = useMemo(() => {
@@ -417,7 +432,7 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
             >
               <optgroup label="Sales Team (Commission Eligible)">
                 <option value="ALL">
-                  All Sales Team Members ({allSalesTeamJobs.length} jobs)
+                  All Sales Team Members ({allSalesTeamJobs.length + commissionRecords.length} jobs)
                 </option>
                 {salesMemberOptions.map((m) => (
                   <option key={m.key} value={m.key}>
@@ -465,7 +480,7 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             <div className="bg-white border border-slate-200 rounded-lg p-5">
               <div className="flex items-center justify-between text-xs text-slate-500">
-                <span>Net Sales Attributed</span>
+                <span>Sales Attributed</span>
                 <Briefcase className="h-4 w-4 text-slate-400" />
               </div>
               <div className="mt-2 font-mono-nums text-2xl font-semibold text-slate-900">
@@ -511,11 +526,17 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
                 {formatMoney(commissionStats.pendingAmount, settings.currency)}
               </div>
               <div className="mt-1 text-xs text-slate-500">
-                Unlocks to Earned when client settles invoice
+                Source sheet entries await VAT and settlement review
               </div>
             </div>
           </div>
 
+          {memberCommissionRecords.length > 0 && <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <div className="p-5"><h3 className="font-bold">Source Job Sheet Commissions ({memberCommissionRecords.length})</h3>
+              <p className="text-xs text-slate-500 mt-1">Commission = rate × gross profit before commission. Source sales and production costs are preserved. Pending review of VAT, settlement and prior commission payments; no cash was paid.</p></div>
+            <div className="overflow-auto max-h-[560px]"><table className="w-full text-xs text-left"><thead className="bg-slate-50"><tr>{['Source Job / Current Job', 'Customer / Marketer', 'Sales', 'Production Cost', 'Gross Profit Before Commission', 'Rate', 'Commission', 'Status'].map(t => <th key={t} className="p-3">{t}</th>)}</tr></thead>
+              <tbody>{visibleCommissionRecords.map(r => <tr key={r.id} className="border-t border-slate-100"><td className="p-3 font-mono">{r.jobReference}<div className="text-slate-500">{r.linkedJobNumber || 'Unlinked historical job'}</div><div className="text-slate-400">Source row {r.sourceRow} · {r.sourceDateText}</div></td><td className="p-3">{r.customerName}<div className="text-slate-500">{r.marketerName}</div></td><td className="p-3">{formatMoney(r.salesAmount, settings.currency)}</td><td className="p-3">{formatMoney(r.productionCost, settings.currency)}</td><td className="p-3">{formatMoney(r.grossProfitBeforeCommission, settings.currency)}</td><td className="p-3">{r.commissionRatePct}%</td><td className="p-3 font-bold">{formatMoney(r.commissionAmount, settings.currency)}</td><td className="p-3">{r.commissionStatus}{r.reviewRequired && <div className="text-amber-700">Review required</div>}</td></tr>)}</tbody></table></div>
+          </div>}
           {/* Job-by-Job Sales Commission Trace */}
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -573,7 +594,7 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
                       const commRate = job.commissionRatePct ?? 0;
                       const commBasis: CommissionBasis =
                         job.commissionBasis || settings.defaultCommissionBasis || 'gross_profit';
-                      const commAmt = job.commissionAmount ?? 0;
+                      const commAmt = commStatus === 'Paid' ? job.commissionAmount || 0 : formulaCommission(job);
 
                       return (
                         <tr key={job.id} className="hover:bg-slate-50/70">
@@ -609,7 +630,7 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
                               {formatMoney(job.netTotal, settings.currency)}
                             </div>
                             <div className="text-[11px] text-slate-500 mt-0.5">
-                              Net Profit {formatMoney(costing.grossProfit, settings.currency)}
+                              Gross Profit {formatMoney(costing.grossProfit, settings.currency)}
                             </div>
                           </td>
                           <td className="py-3 px-4 align-top">
@@ -617,7 +638,7 @@ export const MyAccountView: React.FC<MyAccountViewProps> = ({
                               {commRate}%
                             </div>
                             <div className="text-[11px] text-slate-500 mt-0.5">
-                              {commBasis === 'gross_profit' ? 'of Job Net Profit' : 'of Net Sales'}
+                              of Gross Profit Before Commission
                             </div>
                           </td>
                           <td className="py-3 px-4 align-top text-right font-mono-nums font-bold text-slate-900 whitespace-nowrap">
