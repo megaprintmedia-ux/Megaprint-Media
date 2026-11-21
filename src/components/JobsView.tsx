@@ -24,6 +24,7 @@ import {
 import { DailyJobWorksheet } from './DailyWorksheets';
 import { DayViewControls } from './DayViewControls';
 import { DateSort, datedRecords, dayLabel, getJobDay } from '../utils/dateViews';
+import { DraftControls, useFormDraft } from './FormDraft';
 import { StatusText } from './StatusText';
 
 interface JobsViewProps {
@@ -159,6 +160,8 @@ export const JobsView: React.FC<JobsViewProps> = ({
   const [tailoringMeasurements, setTailoringMeasurements] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const entryDraft = useFormDraft({ form: 'job', active: showCreate, values: { clientId, title, category, status, priority, dueDate, printMethod, substrateOrFabric, colorSpecs, quantity, unitPrice, pricingMode, vatTreatment, vatRate, estMat, estLab, estSub, estOvh, assignedSalesUid, commissionRatePct, commissionBasis, sizes, artworkNotes, tailoringMeasurements }, restore: d => { setClientId(d.clientId); setTitle(d.title); setCategory(d.category); setStatus(d.status); setPriority(d.priority); setDueDate(d.dueDate); setPrintMethod(d.printMethod); setSubstrateOrFabric(d.substrateOrFabric); setColorSpecs(d.colorSpecs); setQuantity(d.quantity); setUnitPrice(d.unitPrice); setPricingMode(d.pricingMode); setVatTreatment(d.vatTreatment); setVatRate(d.vatRate); setEstMat(d.estMat); setEstLab(d.estLab); setEstSub(d.estSub); setEstOvh(d.estOvh); setAssignedSalesUid(d.assignedSalesUid); setCommissionRatePct(d.commissionRatePct); setCommissionBasis(d.commissionBasis); setSizes(d.sizes); setArtworkNotes(d.artworkNotes); setTailoringMeasurements(d.tailoringMeasurements); } });
+
   const canCreate = role === 'management' || role === 'sales';
 
   const matchingJobs = useMemo(() => {
@@ -271,6 +274,7 @@ export const JobsView: React.FC<JobsViewProps> = ({
       setArtworkNotes('');
       setTailoringMeasurements('');
       setSizes({ ...EMPTY_SIZES });
+      entryDraft.clear();
       setShowCreate(false);
     } finally {
       setSaving(false);
@@ -279,6 +283,8 @@ export const JobsView: React.FC<JobsViewProps> = ({
 
   return (
     <div className="space-y-5">
+      {!showCreate && <DraftControls draft={entryDraft} label="Job / Quote" active={false} onResume={() => { setShowCreate(true); }} />}
+
       {(role === 'management' || role === 'accounts') && <DailyJobWorksheet jobs={jobs} invoices={invoices} settings={settings} />}
       {/* Toolbar */}
       <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -596,6 +602,7 @@ export const JobsView: React.FC<JobsViewProps> = ({
               </div>
             ) : (
               <form onSubmit={handleSubmitJob} className="p-6 space-y-6">
+              <DraftControls draft={entryDraft} label="Job / Quote" active onResume={() => {}} />
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="sm:col-span-2">
                     <label className="block text-xs font-medium text-slate-700 mb-1">
