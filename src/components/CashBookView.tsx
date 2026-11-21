@@ -23,6 +23,7 @@ import {
 import { formatMoney, round2 } from '../utils/vat';
 import { DayViewControls } from './DayViewControls';
 import { validDay } from '../utils/dateViews';
+import { DraftControls, useFormDraft } from './FormDraft';
 import { StatusText } from './StatusText';
 
 interface CashBookViewProps {
@@ -135,6 +136,8 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
   const [reconciled, setReconciled] = useState(false);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const entryDraft = useFormDraft({ form: 'cash-book', active: showCreate, values: { entryDate, entryType, account, category, counterparty, amount, reference, linkedDocRef, reconciled, notes }, restore: d => { setEntryDate(d.entryDate); setEntryType(d.entryType); setAccount(d.account); setCategory(d.category); setCounterparty(d.counterparty); setAmount(d.amount); setReference(d.reference); setLinkedDocRef(d.linkedDocRef); setReconciled(d.reconciled); setNotes(d.notes); } });
 
   // Management Edit & Delete state
   const [editingEntry, setEditingEntry] = useState<CashBookEntry | null>(null);
@@ -346,6 +349,7 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
         notes: notes.trim(),
       });
       resetForm();
+      entryDraft.clear();
       setShowCreate(false);
     } finally {
       setSaving(false);
@@ -450,6 +454,7 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
 
   return (
     <div className="space-y-5">
+      {!showCreate && <DraftControls draft={entryDraft} label="Cash Book Entry" active={false} onResume={() => setShowCreate(true)} />}
       {/* KPI Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <div className="bg-white border border-slate-200 rounded-lg p-5">
@@ -798,6 +803,7 @@ export const CashBookView: React.FC<CashBookViewProps> = ({
               onSubmit={handleCreateSubmit}
               className="p-6 overflow-y-auto space-y-4 text-xs"
             >
+              <DraftControls draft={entryDraft} label="Cash Book Entry" active onResume={() => {}} />
               {(invoices.length > 0 || supplierInvoices.length > 0) && (
                 <div className="bg-slate-50 border border-slate-200 rounded-md p-3">
                   <label className="block font-medium text-slate-700 mb-1">

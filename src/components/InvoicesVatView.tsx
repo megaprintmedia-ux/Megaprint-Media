@@ -25,6 +25,7 @@ import {
 import { BrandLogo } from './BrandLogo';
 import { DayViewControls } from './DayViewControls';
 import { DateSort, datedRecords } from '../utils/dateViews';
+import { DraftControls, useFormDraft } from './FormDraft';
 import { StatusText } from './StatusText';
 
 interface InvoicesVatViewProps {
@@ -177,6 +178,9 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
   ]);
   const [saving, setSaving] = useState(false);
 
+  const invoiceDraftPrefill = React.useRef(false);
+  const entryDraft = useFormDraft({ form: 'customer-invoice', active: showCreate, values: { clientId, jobId, issueDate, dueDate, pricingMode, vatRate, notes, lines }, restoreOnOpen: !invoiceDraftPrefill.current, restore: d => { setClientId(d.clientId); setJobId(d.jobId); setIssueDate(d.issueDate); setDueDate(d.dueDate); setPricingMode(d.pricingMode); setVatRate(d.vatRate); setNotes(d.notes); setLines(d.lines); } });
+
   // Payment modal state (supports Client WHT withholding)
   const [payAmount, setPayAmount] = useState('');
   const [payMethod, setPayMethod] = useState('Bank Transfer / ZIPIT');
@@ -199,6 +203,7 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
         onClearPrefillJob();
         return;
       }
+      invoiceDraftPrefill.current = true;
       setClientId(prefillJob.clientId);
       setJobId(prefillJob.id);
       setPricingMode(prefillJob.pricingMode);
@@ -320,6 +325,7 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
         paymentReference: '',
         notes: notes.trim(),
       });
+      entryDraft.clear();
       setShowCreate(false);
     } finally {
       setSaving(false);
@@ -503,6 +509,8 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
 
   return (
     <div className="space-y-5">
+      {!showCreate && <DraftControls draft={entryDraft} label="Customer Invoice" active={false} onResume={() => { invoiceDraftPrefill.current = false; setShowCreate(true); }} />}
+
       {isVatOnly && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900 no-print">
           <strong>ZIMRA / VAT-Only Read-Only View:</strong> Showing only issued VAT-taxable
@@ -539,6 +547,7 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
                 { description: '', quantity: '1', unitPrice: '0', vatTreatment: 'standard' },
               ]);
               setJobId('');
+              invoiceDraftPrefill.current = false;
               setShowCreate(true);
             }}
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-md bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 whitespace-nowrap shrink-0"
@@ -707,6 +716,7 @@ export const InvoicesVatView: React.FC<InvoicesVatViewProps> = ({
               </div>
             ) : (
               <form onSubmit={handleCreateSubmit} className="p-6 space-y-5">
+              <DraftControls draft={entryDraft} label="Customer Invoice" active onResume={() => {}} />
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
                   <div className="sm:col-span-2">
                     <label className="block text-xs font-medium text-slate-700 mb-1">

@@ -34,6 +34,7 @@ import {
 import { DailyExpenseWorksheet } from './DailyWorksheets';
 import { DayViewControls } from './DayViewControls';
 import { DateSort, datedRecords } from '../utils/dateViews';
+import { DraftControls, useFormDraft } from './FormDraft';
 import { StatusText } from './StatusText';
 
 interface AccountingViewProps {
@@ -151,6 +152,8 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
   const [paymentStatus, setPaymentStatus] = useState<'Paid' | 'Payable'>('Paid');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const entryDraft = useFormDraft({ form: 'expense', active: showAddExpense, values: { vendorName, vendorTin, vendorVatReg, vendorInvoiceRef, category, jobId, expenseDate, vatTreatment, isVatClaimable, pricingMode, amount, vatRate, whtApplicable, whtRate, paymentStatus, notes }, restore: d => { setVendorName(d.vendorName); setVendorTin(d.vendorTin); setVendorVatReg(d.vendorVatReg); setVendorInvoiceRef(d.vendorInvoiceRef); setCategory(d.category); setJobId(d.jobId); setExpenseDate(d.expenseDate); setVatTreatment(d.vatTreatment); setIsVatClaimable(d.isVatClaimable); setPricingMode(d.pricingMode); setAmount(d.amount); setVatRate(d.vatRate); setWhtApplicable(d.whtApplicable); setWhtRate(d.whtRate); setPaymentStatus(d.paymentStatus); setNotes(d.notes); } });
 
   // Edit expense form
   const [editExpNumber, setEditExpNumber] = useState('');
@@ -391,6 +394,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
       setAmount('');
       setWhtApplicable(false);
       setNotes('');
+      entryDraft.clear();
       setShowAddExpense(false);
     } finally {
       setSaving(false);
@@ -580,6 +584,8 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
 
   return (
     <div className="space-y-5">
+      {!showAddExpense && <DraftControls draft={entryDraft} label="Expense" active={false} onResume={() => { setShowAddExpense(true); }} />}
+
       {isVatOnly && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900">
           <strong>ZIMRA / VAT-Only Read-Only View:</strong> Showing only VAT-reportable
@@ -1227,6 +1233,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
               </button>
             </div>
             <form onSubmit={handleSaveExpense} className="overflow-y-auto p-6 space-y-4">
+              <DraftControls draft={entryDraft} label="Expense" active onResume={() => {}} />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
