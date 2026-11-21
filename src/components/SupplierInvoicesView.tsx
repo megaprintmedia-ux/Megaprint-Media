@@ -40,6 +40,7 @@ import {
 import { DayViewControls } from './DayViewControls';
 import { DateSort, datedRecords, dayLabel, harareDay } from '../utils/dateViews';
 import type { LineClassificationEdit, GrnLinkAssignment } from '../utils/inventoryAccounting';
+import { DraftControls, useFormDraft } from './FormDraft';
 import { StatusText } from './StatusText';
 
 function SupplierPaymentHistory({ entries, currency, accounts }: { entries: CashBookEntry[]; currency: string; accounts: ChartAccount[] }) {
@@ -252,6 +253,8 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
     { description: '', quantity: '1', unitPrice: '0', vatTreatment: 'standard' },
   ]);
   const [saving, setSaving] = useState(false);
+
+  const entryDraft = useFormDraft({ form: 'supplier-bill', active: showCreate, values: { supplierName, supplierTin, supplierVatReg, isVatRegistered, supplierInvoiceNo, category, jobId, invoiceDate, dueDate, pricingMode, vatRate, isVatClaimable, whtApplicable, whtRate, notes, lines }, restore: d => { setSupplierName(d.supplierName); setSupplierTin(d.supplierTin); setSupplierVatReg(d.supplierVatReg); setIsVatRegistered(d.isVatRegistered); setSupplierInvoiceNo(d.supplierInvoiceNo); setCategory(d.category); setJobId(d.jobId); setInvoiceDate(d.invoiceDate); setDueDate(d.dueDate); setPricingMode(d.pricingMode); setVatRate(d.vatRate); setIsVatClaimable(d.isVatClaimable); setWhtApplicable(d.whtApplicable); setWhtRate(d.whtRate); setNotes(d.notes); setLines(d.lines); } });
 
   // Payment modal state
   const [payAmount, setPayAmount] = useState('');
@@ -653,6 +656,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
         notes: notes.trim(),
       });
       resetForm();
+      entryDraft.clear();
       setShowCreate(false);
     } finally {
       setSaving(false);
@@ -771,6 +775,8 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
 
   return (
     <div className="space-y-5">
+      {!showCreate && <DraftControls draft={entryDraft} label="Supplier Bill" active={false} onResume={() => { setShowCreate(true); }} />}
+
       {isVatOnly && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-900">
           <strong>ZIMRA / VAT-Only Read-Only View:</strong> Showing only VAT-claimable supplier
@@ -1432,6 +1438,7 @@ export const SupplierInvoicesView: React.FC<SupplierInvoicesViewProps> = ({
             </div>
 
             <form onSubmit={handleCreateSubmit} className="overflow-y-auto p-6 space-y-5">
+              <DraftControls draft={entryDraft} label="Supplier Bill" active onResume={() => {}} />
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 {suppliers.length > 0 && (
                   <div className="sm:col-span-3">
