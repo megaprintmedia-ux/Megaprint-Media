@@ -333,6 +333,51 @@ export interface Job {
   updatedAt?: unknown;
 }
 
+/** Historical source-sheet entitlement; never an expense, payment or invoice. */
+export interface CommissionRecord {
+  id: string;
+  sourceKey: string;
+  sourceName: string;
+  sourceRow: number;
+  jobReference: string;
+  sourceDateText: string;
+  customerName: string;
+  marketerUid: string;
+  marketerName: string;
+  salesAmount: number;
+  productionCost: number;
+  grossProfitBeforeCommission: number;
+  commissionRatePct: number;
+  commissionAmount: number;
+  commissionBasis: 'gross_profit';
+  commissionStatus: CommissionStatus;
+  linkedJobId: string;
+  linkedJobNumber: string;
+  reviewRequired: boolean;
+  ownerUid: string;
+  viewerUids: string[];
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface CommissionSheetRow {
+  sourceRow: number;
+  jobReference: string;
+  customerName: string;
+  dateText: string;
+  salesAmount: number;
+  productionCost: number;
+  linkedJobReference?: string;
+}
+
+export interface CommissionSheetInput {
+  sourceKey: string;
+  sourceName: string;
+  marketerName: string;
+  commissionRatePct: number;
+  rows: CommissionSheetRow[];
+}
+
 export type CommissionBasis = 'net_sales' | 'gross_profit';
 export type CommissionStatus = 'Pending' | 'Earned' | 'Approved' | 'Paid';
 

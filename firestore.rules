@@ -1816,6 +1816,32 @@ service cloud.firestore {
       allow delete: if isManagement() && isValidId(recordId);
     }
 
+    // Reviewed historical source-sheet commission ledger. No authentication account is created.
+    function isValidCommissionRecord(d) {
+      return d.keys().hasAll(['sourceKey','sourceName','sourceRow','jobReference','sourceDateText','customerName','marketerUid','marketerName','salesAmount','productionCost','grossProfitBeforeCommission','commissionRatePct','commissionAmount','commissionBasis','commissionStatus','linkedJobId','linkedJobNumber','reviewRequired','ownerUid','viewerUids','createdAt','updatedAt']) &&
+        d.keys().hasOnly(['sourceKey','sourceName','sourceRow','jobReference','sourceDateText','customerName','marketerUid','marketerName','salesAmount','productionCost','grossProfitBeforeCommission','commissionRatePct','commissionAmount','commissionBasis','commissionStatus','linkedJobId','linkedJobNumber','reviewRequired','ownerUid','viewerUids','createdAt','updatedAt']) &&
+        isNonEmptyStr(d.sourceKey,128) && isNonEmptyStr(d.sourceName,200) && d.sourceRow is int && d.sourceRow >= 1 && d.sourceRow <= 1048576 &&
+        isNonEmptyStr(d.jobReference,40) && isOptionalStr(d.sourceDateText,40) && isNonEmptyStr(d.customerName,160) &&
+        isNonEmptyStr(d.marketerUid,128) && isNonEmptyStr(d.marketerName,120) &&
+        isFiniteNum(d.salesAmount) && d.salesAmount >= 0 && isFiniteNum(d.productionCost) && d.productionCost >= 0 && isFiniteNum(d.grossProfitBeforeCommission) &&
+        isFiniteNum(d.commissionRatePct) && d.commissionRatePct >= 0 && d.commissionRatePct <= 50 &&
+        isFiniteNum(d.commissionAmount) && d.commissionAmount >= 0 &&
+        d.grossProfitBeforeCommission - (d.salesAmount - d.productionCost) >= -0.011 &&
+        d.grossProfitBeforeCommission - (d.salesAmount - d.productionCost) <= 0.011 &&
+        d.commissionAmount - ((d.grossProfitBeforeCommission > 0 ? d.grossProfitBeforeCommission : 0) * d.commissionRatePct / 100) >= -0.011 &&
+        d.commissionAmount - ((d.grossProfitBeforeCommission > 0 ? d.grossProfitBeforeCommission : 0) * d.commissionRatePct / 100) <= 0.011 &&
+        d.commissionBasis == 'gross_profit' && d.commissionStatus in ['Pending','Earned','Approved','Paid'] &&
+        isOptionalStr(d.linkedJobId,128) && isOptionalStr(d.linkedJobNumber,120) && d.reviewRequired is bool &&
+        isNonEmptyStr(d.ownerUid,128) && isBoundedUidList(d.viewerUids);
+    }
+    match /commissionRecords/{recordId} {
+      allow get: if isManagement() || (isValidId(recordId) && (isAccountsOrManagement() || (isSalesOrManagement() && resource.data.marketerUid == request.auth.uid)));
+      allow list: if isBootstrappedAdmin() || (isAccountsOrManagement() && request.auth.uid in resource.data.viewerUids) || (isSalesOrManagement() && resource.data.marketerUid == request.auth.uid);
+      allow create: if isManagement() && isValidId(recordId) && isValidCommissionRecord(incoming()) && incoming().ownerUid == request.auth.uid && request.auth.uid in incoming().viewerUids && incoming().commissionStatus == 'Pending' && incoming().reviewRequired == true && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isManagement() && isValidId(recordId) && isValidCommissionRecord(incoming()) && existing().commissionStatus != 'Paid' && incoming().commissionStatus != 'Paid' && incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
     // 21. Legacy Data Import Runs & Audit Snapshots (Strictly Management-Only)
     match /migrationRuns/{runId} {
       allow get: if isManagement() && isValidId(runId);

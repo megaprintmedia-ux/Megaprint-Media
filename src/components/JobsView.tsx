@@ -5,6 +5,7 @@ import {
   CommissionBasis,
   CompanySettings,
   Job,
+  Invoice,
   JobPriority,
   JobStatus,
   PricingMode,
@@ -20,6 +21,7 @@ import {
   calculateVatBreakdown,
   formatMoney,
 } from '../utils/vat';
+import { DailyJobWorksheet } from './DailyWorksheets';
 import { StatusText } from './StatusText';
 
 interface JobsViewProps {
@@ -29,6 +31,7 @@ interface JobsViewProps {
   users: UserProfile[];
   settings: CompanySettings;
   jobs: Job[];
+  invoices?: Invoice[];
   clients: Client[];
   openCreateModalSignal: number;
   onCreateJob: (
@@ -78,6 +81,7 @@ export const JobsView: React.FC<JobsViewProps> = ({
   users,
   settings,
   jobs,
+  invoices = [],
   clients,
   openCreateModalSignal,
   onCreateJob,
@@ -269,6 +273,7 @@ export const JobsView: React.FC<JobsViewProps> = ({
 
   return (
     <div className="space-y-5">
+      {(role === 'management' || role === 'accounts') && <DailyJobWorksheet jobs={jobs} invoices={invoices} settings={settings} />}
       {/* Toolbar */}
       <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-2">

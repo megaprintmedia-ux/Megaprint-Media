@@ -19,6 +19,7 @@ import {
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
+import { buildCommissionSheet, formulaCommission, commissionCosting } from '../utils/commissions';
 import {
   CashBookAccount,
   CashBookCategory,
@@ -28,6 +29,8 @@ import {
   Client,
   CommissionBasis,
   CommissionStatus,
+  CommissionRecord,
+  CommissionSheetInput,
   CompanySettings,
   CostType,
   DEFAULT_ZIM_CASH_ACCOUNTS,
@@ -220,6 +223,7 @@ export function useErpData() {
   const [chartOfAccounts, setChartOfAccounts] = useState<ChartAccount[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [commissionRecords, setCommissionRecords] = useState<CommissionRecord[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -569,6 +573,17 @@ export function useErpData() {
         (err) => handleFirestoreError(err, OperationType.LIST, 'chartOfAccounts')
       )
     );
+
+    // Source-sheet commissions contain financial data; production and VAT-only roles do not subscribe.
+    if ((isAccountsOrMgmt || profile.role === 'sales') && !isVatAuditorOnly) {
+      const recordsRef = collection(db, 'commissionRecords');
+      const recordsQuery = isBootAdmin ? recordsRef : profile.role === 'sales'
+        ? query(recordsRef, where('marketerUid', '==', user.uid))
+        : query(recordsRef, where('viewerUids', 'array-contains', user.uid));
+      unsubs.push(onSnapshot(recordsQuery, snap => setCommissionRecords(snap.docs.map(d => ({
+        id: d.id, ...(d.data() as Omit<CommissionRecord, 'id'>),
+      }))), err => handleFirestoreError(err, OperationType.LIST, 'commissionRecords')));
+    } else setCommissionRecords([]);
 
     // Restricted Accounts & HR collections
     if (isAccountsOrMgmt) {
@@ -1167,7 +1182,7 @@ export function useErpData() {
     );
 
     const basis: CommissionBasis =
-      input.commissionBasis || settings.defaultCommissionBasis || 'gross_profit';
+      'gross_profit';
     const ratePct = isSalesEligible
       ? Math.max(
           0,
@@ -1184,9 +1199,7 @@ export function useErpData() {
     const activeCost =
       (input.actualCostTotal || 0) > 0 ? input.actualCostTotal || 0 : estCostSum;
     const computedComm = isSalesEligible
-      ? input.commissionAmount !== undefined
-        ? round2(Math.max(0, Number(input.commissionAmount) || 0))
-        : calculateJobCommission({
+      ? calculateJobCommission({
             netTotal: input.netTotal,
             grossProfit: input.netTotal - activeCost,
             commissionRatePct: ratePct,
@@ -3785,6 +3798,7 @@ export function useErpData() {
         clean.assignedSalesName = isSalesEligible
           ? trimStr(assignedRep?.displayName || updates.assignedSalesName, 120)
           : '';
+      if (!isSalesEligible && commissionRecords.some(r => r.linkedJobId === jobId)) throw new Error('Reassign a source commission to a sales marketer rather than removing its attribution.');
       if (!isSalesEligible) {
         clean.commissionRatePct = 0;
         clean.commissionAmount = 0;
@@ -3794,22 +3808,74 @@ export function useErpData() {
             0,
             Math.min(50, round2(Number(updates.commissionRatePct) || 0))
           );
-        if (updates.commissionAmount !== undefined)
-          clean.commissionAmount = Math.max(
-            0,
-            round2(Number(updates.commissionAmount) || 0)
-          );
+        if (!existingJob) throw new Error('Job not found.');
+        const nextJob = { ...existingJob, ...updates, commissionRatePct: Number(clean.commissionRatePct ?? existingJob.commissionRatePct ?? settings.defaultCommissionRatePct ?? 0) };
+        clean.commissionAmount = formulaCommission(nextJob, commissionRecords);
+        if (existingJob.commissionStatus === 'Paid' && clean.commissionAmount !== existingJob.commissionAmount) {
+          throw new Error('A paid commission needs a separate adjustment; its paid amount is preserved.');
+        }
       }
-      if (updates.commissionBasis !== undefined)
-        clean.commissionBasis = updates.commissionBasis;
+      clean.commissionBasis = 'gross_profit';
       if (updates.commissionStatus !== undefined)
         clean.commissionStatus = updates.commissionStatus;
       if (updates.commissionPaidDate !== undefined)
         clean.commissionPaidDate = trimStr(updates.commissionPaidDate, 32);
-      await updateDoc(doc(db, 'jobs', jobId), clean);
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'jobs', jobId), clean);
+      for (const record of commissionRecords.filter(r => r.linkedJobId === jobId)) {
+        if (record.commissionStatus === 'Paid') continue;
+        const rate = Number(clean.commissionRatePct ?? existingJob?.commissionRatePct ?? record.commissionRatePct);
+        batch.update(doc(db, 'commissionRecords', record.id), {
+          marketerUid: isSalesEligible ? effectiveSalesUid : '',
+          marketerName: isSalesEligible ? String(clean.assignedSalesName ?? existingJob?.assignedSalesName ?? record.marketerName) : '',
+          commissionRatePct: isSalesEligible ? rate : 0,
+          commissionAmount: isSalesEligible ? calculateJobCommission({ netTotal: record.salesAmount, grossProfit: record.grossProfitBeforeCommission, commissionRatePct: rate, commissionBasis: 'gross_profit' }) : 0,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      await batch.commit();
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `jobs/${jobId}`);
     }
+  };
+
+  const importCommissionSheet = async (input: CommissionSheetInput) => {
+    if (!user || profile?.role !== 'management') throw new Error('Management access is required.');
+    const plan = buildCommissionSheet(input, jobs, users);
+    const entries = plan.rows.map(row => ({ row, ref: doc(db, 'commissionRecords', makeDeterministicId('commission', plan.sheet.sourceKey + '|' + row.jobReference)) }));
+    const saved = await Promise.all(entries.map(({ ref }) => getDoc(ref)));
+    saved.forEach((snap, i) => {
+      if (snap.data()?.commissionStatus === 'Paid') throw new Error(`Paid commission ${entries[i].row.jobReference} is preserved.`);
+    });
+    for (let offset = 0; offset < entries.length; offset += 8) {
+      const batch = writeBatch(db);
+      entries.slice(offset, offset + 8).forEach(({ row, ref }, localIndex) => {
+      const i = offset + localIndex;
+      const previous = saved[i].data() as CommissionRecord | undefined;
+      if (previous?.commissionStatus === 'Paid') throw new Error(`Paid commission ${row.jobReference} is preserved. Reconcile it separately.`);
+      if (row.job && commissionRecords.some(r => r.linkedJobId === row.job!.id && r.sourceKey !== plan.sheet.sourceKey)) throw new Error(`Another source already records commission for ${row.job.jobNumber}.`);
+      const viewers = Array.from(new Set([user.uid, ...hrViewerUids, plan.marketerUid])).slice(0, 10);
+      batch.set(ref, {
+        sourceKey: plan.sheet.sourceKey, sourceName: plan.sheet.sourceName, sourceRow: row.sourceRow,
+        jobReference: row.jobReference, sourceDateText: row.dateText, customerName: row.customerName,
+        marketerUid: plan.marketerUid, marketerName: plan.sheet.marketerName,
+        salesAmount: row.salesAmount, productionCost: row.productionCost,
+        grossProfitBeforeCommission: row.grossProfitBeforeCommission,
+        commissionRatePct: plan.sheet.commissionRatePct, commissionAmount: row.commissionAmount,
+        commissionBasis: 'gross_profit', commissionStatus: 'Pending',
+        linkedJobId: row.job?.id || '', linkedJobNumber: row.job?.jobNumber || '', reviewRequired: true,
+        ownerUid: previous?.ownerUid || user.uid, viewerUids: viewers,
+        createdAt: previous?.createdAt || serverTimestamp(), updatedAt: serverTimestamp(),
+      });
+      if (row.job) batch.update(doc(db, 'jobs', row.job.id), {
+        assignedSalesUid: plan.marketerUid, assignedSalesName: plan.sheet.marketerName,
+        commissionBasis: 'gross_profit', commissionRatePct: plan.sheet.commissionRatePct,
+        commissionAmount: row.commissionAmount, commissionStatus: 'Pending', updatedAt: serverTimestamp(),
+      });
+    });
+    await batch.commit();
+    }
+    return { saved: entries.length, linked: plan.linkedCount };
   };
 
   const payJobCommission = async (
@@ -3818,7 +3884,9 @@ export function useErpData() {
     reference?: string
   ) => {
     if (!user || !profile || !isAccountsOrMgmt) return;
-    const payout = round2(Math.max(0, job.commissionAmount || 0));
+    if (job.commissionStatus === 'Paid') return;
+    if (commissionRecords.some(r => r.linkedJobId === job.id && r.reviewRequired)) throw new Error('Reconcile the source sheet tax and settlement details before paying commission.');
+    const payout = formulaCommission(job, commissionRecords);
     if (payout <= 0) return;
     const today = new Date().toISOString().slice(0, 10);
     const chosenAcc =
@@ -3828,6 +3896,8 @@ export function useErpData() {
       const batch = writeBatch(db);
       batch.update(doc(db, 'jobs', job.id), {
         commissionStatus: 'Paid',
+        commissionAmount: payout,
+        commissionBasis: 'gross_profit',
         commissionPaidDate: today,
         updatedAt: serverTimestamp(),
       });
@@ -6100,6 +6170,8 @@ export function useErpData() {
     updateJob,
     deleteJob,
     updateJobCommission,
+    importCommissionSheet,
+    commissionRecords,
     payJobCommission,
     addJobCostEntry,
     subscribeJobCosts,

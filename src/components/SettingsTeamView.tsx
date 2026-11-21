@@ -18,6 +18,8 @@ import {
   ChartAccountType,
   CommissionBasis,
   CommissionStatus,
+  CommissionRecord,
+  CommissionSheetInput,
   CompanySettings,
   Job,
   TaxAccessScope,
@@ -33,6 +35,8 @@ import {
 } from '../utils/vat';
 import { BrandLogo } from './BrandLogo';
 import { StatusText } from './StatusText';
+import { CommissionSheetImport } from './CommissionSheetImport';
+import { commissionCosting } from '../utils/commissions';
 
 interface SettingsTeamViewProps {
   settings: CompanySettings;
@@ -40,6 +44,8 @@ interface SettingsTeamViewProps {
   userInvites: UserInvite[];
   chartOfAccounts: ChartAccount[];
   jobs: Job[];
+  commissionRecords?: CommissionRecord[];
+  onImportCommissionSheet: (sheet: CommissionSheetInput) => Promise<{ saved: number; linked: number }>;
   onUpdateSettings: (
     updates: Partial<Omit<CompanySettings, 'id' | 'ownerUid' | 'updatedAt'>>
   ) => Promise<void>;
@@ -122,6 +128,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
   userInvites,
   chartOfAccounts,
   jobs,
+  commissionRecords = [],
+  onImportCommissionSheet,
   onUpdateSettings,
   onUpdateUserAccess,
   onSyncZimraVatScope,
@@ -447,7 +455,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
     setSavedCommPolicy(false);
     try {
       await onUpdateSettings({
-        defaultCommissionBasis: defaultCommBasis,
+        defaultCommissionBasis: 'gross_profit',
         defaultCommissionRatePct: Math.max(
           0,
           Math.min(50, Number(defaultCommRate) || 0)
@@ -464,8 +472,15 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
   }, [users]);
 
   const activeSalesMembers = useMemo(() => {
-    return users.filter((u) => u.status === 'active' && u.role === 'sales');
-  }, [users]);
+    const members = new Map(users.filter(u => u.status === 'active' && u.role === 'sales').map(u => [u.uid, u]));
+    const add = (uid: string, name: string, rate: number) => {
+      if (!uid || members.has(uid) || users.some(u => u.uid === uid && u.role !== 'sales')) return;
+      members.set(uid, { id: uid, uid, displayName: name, email: '', role: 'sales', department: 'Sales & Marketing', status: 'active', commissionRatePct: rate });
+    };
+    jobs.forEach(j => add(j.assignedSalesUid || '', j.assignedSalesName, j.commissionRatePct ?? settings.defaultCommissionRatePct ?? 0));
+    commissionRecords.forEach(r => add(r.marketerUid, r.marketerName, r.commissionRatePct));
+    return Array.from(members.values());
+  }, [users, jobs, commissionRecords, settings.defaultCommissionRatePct]);
 
   const filteredCommissionJobs = useMemo(() => {
     const q = commSearch.trim().toLowerCase();
@@ -496,7 +511,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
       await onUpdateJobCommission(job.id, {
         assignedSalesUid: chosenSalesUser ? chosenSalesUser.uid : '',
         assignedSalesName: chosenSalesUser ? chosenSalesUser.displayName : '',
-        commissionBasis: draft.basis,
+        commissionBasis: 'gross_profit',
         commissionRatePct: rate,
         commissionAmount: amt,
         commissionStatus: isSalesAssigned ? draft.status : 'Pending',
@@ -573,7 +588,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
             {settings.currency} · ZIMRA VAT {settings.defaultVatRate}% · Comm{' '}
             {settings.defaultCommissionRatePct ?? 5}% (
             {(settings.defaultCommissionBasis || 'gross_profit') === 'gross_profit'
-              ? 'Job Net Profit'
+              ? 'Gross Profit Before Commission'
               : 'Net Sales'}
             )
           </div>
@@ -1026,13 +1041,13 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                 <p className="text-xs text-slate-500 mt-0.5">
                   Commissions apply <strong>only to Sales &amp; Marketing team members</strong>.
                   By default, commission is calculated on the{' '}
-                  <strong>Net Profit of the Job</strong> (Net Sales Excl. VAT minus job costs).
+                  <strong>Gross Profit Before Commission</strong> (Net Sales Excl. VAT minus job costs).
                 </p>
               </div>
               <span className="text-xs font-mono-nums font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-3 py-1 rounded-md shrink-0">
                 Active Default:{' '}
                 {defaultCommBasis === 'gross_profit'
-                  ? `${defaultCommRate || 0}% of Job Net Profit`
+                  ? `${defaultCommRate || 0}% of Gross Profit Before Commission`
                   : `${defaultCommRate || 0}% of Net Sales`}
               </span>
             </div>
@@ -1050,9 +1065,9 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                   className="w-full border border-slate-200 rounded-md px-3 py-2 text-sm bg-white"
                 >
                   <option value="gross_profit">
-                    % of Net Profit of Job (Sales Excl. VAT − Costs) — Default
+                    % of Gross Profit Before Commission (Sales Excl. VAT − Costs) — Default
                   </option>
-                  <option value="net_sales">% of Net Sales Value (Excl. VAT)</option>
+
                 </select>
               </div>
               <div>
@@ -1167,16 +1182,18 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
             )}
           </div>
 
+          <CommissionSheetImport jobs={jobs} users={users} onImport={onImportCommissionSheet} />
+
           {/* Manual Per-Job Commission Editor */}
           <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-3">
               <div>
                 <h3 className="font-display text-sm font-bold text-slate-900">
-                  Manual Job Commission Editor &amp; Overrides ({filteredCommissionJobs.length})
+                  Job Commission Assignments ({filteredCommissionJobs.length})
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Manually assign reps, switch basis, recalculate on Job Net Profit, or
-                  enter custom commission amounts and statuses per job.
+                  Assign reps and calculate commission on Gross Profit Before Commission.
+                  Set rates and review statuses per job.
                 </p>
               </div>
               <input
@@ -1198,17 +1215,17 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50/70 text-[11px] font-medium text-slate-500">
                       <th className="py-2.5 px-4">Job &amp; Client</th>
-                      <th className="py-2.5 px-4 text-right">Net Sales / Job Net Profit</th>
+                      <th className="py-2.5 px-4 text-right">Net Sales / Gross Profit Before Commission</th>
                       <th className="py-2.5 px-4">Sales Rep</th>
                       <th className="py-2.5 px-4">Basis &amp; Rate %</th>
-                      <th className="py-2.5 px-4">Manual Amount ({settings.currency})</th>
+                      <th className="py-2.5 px-4">Calculated Amount ({settings.currency})</th>
                       <th className="py-2.5 px-4">Status</th>
                       <th className="py-2.5 px-4 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredCommissionJobs.map((job) => {
-                      const costing = calculateJobCosting(job);
+                      const costing = commissionCosting(job, commissionRecords);
                       const draft = jobCommDrafts[job.id] || {
                         repUid: job.assignedSalesUid || '',
                         basis:
@@ -1229,7 +1246,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                             netTotal: job.netTotal,
                             grossProfit: costing.grossProfit,
                             commissionRatePct: Number(draft.ratePct) || 0,
-                            commissionBasis: draft.basis,
+                            commissionBasis: 'gross_profit',
                           })
                         : 0;
 
@@ -1248,7 +1265,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                           </td>
                           <td className="py-3 px-4 align-top text-right font-mono-nums whitespace-nowrap">
                             <div className="text-slate-700">
-                              {formatMoney(job.netTotal, settings.currency)}
+                              {formatMoney(costing.salesAmount, settings.currency)}
                             </div>
                             <div
                               className={`text-[11px] font-semibold mt-0.5 ${
@@ -1289,7 +1306,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                   netTotal: job.netTotal,
                                   grossProfit: costing.grossProfit,
                                   commissionRatePct: Number(nextRate) || 0,
-                                  commissionBasis: draft.basis,
+                                  commissionBasis: 'gross_profit',
                                 });
                                 setJobCommDrafts((prev) => ({
                                   ...prev,
@@ -1340,8 +1357,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                 }}
                                 className="border border-slate-200 rounded px-2 py-1 text-xs bg-white disabled:bg-slate-100 disabled:text-slate-400"
                               >
-                                <option value="gross_profit">Job Net Profit</option>
-                                <option value="net_sales">Net Sales</option>
+                                <option value="gross_profit">Gross Profit Before Commission</option>
+
                               </select>
                               <input
                                 type="number"
@@ -1356,7 +1373,7 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                     netTotal: job.netTotal,
                                     grossProfit: costing.grossProfit,
                                     commissionRatePct: Number(nextRate) || 0,
-                                    commissionBasis: draft.basis,
+                                    commissionBasis: 'gross_profit',
                                   });
                                   setJobCommDrafts((prev) => ({
                                     ...prev,
@@ -1379,7 +1396,8 @@ export const SettingsTeamView: React.FC<SettingsTeamViewProps> = ({
                                 min="0"
                                 step="0.01"
                                 disabled={!isSalesRepSelected}
-                                value={isSalesRepSelected ? draft.amount : '0'}
+                                value={formulaAmount}
+                                readOnly
                                 onChange={(e) =>
                                   setJobCommDrafts((prev) => ({
                                     ...prev,

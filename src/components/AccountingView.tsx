@@ -31,6 +31,7 @@ import {
   COGS_SUPPLIER_CATEGORIES,
   computeAccountingLedger,
 } from '../utils/inventoryAccounting';
+import { DailyExpenseWorksheet } from './DailyWorksheets';
 import { StatusText } from './StatusText';
 
 interface AccountingViewProps {
@@ -1079,6 +1080,7 @@ export const AccountingView: React.FC<AccountingViewProps> = ({
       {/* Expenses Ledger Tab */}
       {effectiveTab === 'expenses' && (
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+          {!isVatOnly && <DailyExpenseWorksheet expenses={expenses} cashBookEntries={cashBookEntries} jobs={jobs} settings={settings} />}
           {expenses.length === 0 ? (
             <div className="p-10 text-center text-sm text-slate-500">
               No supplier bills or operating expenses logged yet.
